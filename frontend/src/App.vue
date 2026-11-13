@@ -4,6 +4,7 @@
     :class="{
       'has-custom-background': showCustomBackground,
       'mini-mode': appStore.miniMode,
+      'borderless-mode': borderlessMode && !appStore.isWebMode,
     }"
     :style="appShellStyle"
   >
@@ -16,7 +17,20 @@
     <!-- 标题栏只在桌面端渲染: 它整套是为无边框窗口服务的(拖动区、最小化/
          最大化/关闭、迷你模式)。浏览器里没有窗口可控制, 留着只会显示三个
          点了没反应的按钮, 还白占 30px 顶部空间。 -->
-    <TitleBar v-if="!appStore.isWebMode" :surface="titlebarSurface" />
+    <TitleBar v-if="!appStore.isWebMode && !borderlessMode" :surface="titlebarSurface" />
+    <!--
+      纯净无边框模式：不渲染自绘标题栏。它占 32px 且带 1px 下边线与毛玻璃，
+      视觉上就是一条「假边框」，把正文压下去、首行切半截。
+      Rust 侧 .decorations(false) 已经是真无边框，这里只需不再把它补回来。
+      只留 4px 全透明拖拽条，否则无边框窗口完全没有可拖动区域。
+    -->
+    <div
+      v-if="!appStore.isWebMode && borderlessMode"
+      class="borderless-drag-strip"
+      data-tauri-drag-region
+      aria-label="拖动窗口，双击最大化或还原"
+      @dblclick="toggleMaximizeFromStrip"
+    ></div>
     <div class="app-body">
       <AppTopBar v-if="showHeader" />
       <main class="app-main" :class="{ 'with-bottom-nav': showBottomNav, 'without-header': !showHeader }">
@@ -70,11 +84,13 @@ import TitleBar from './components/TitleBar.vue'
 import { resolveWindowClose } from './utils/windowClose'
 import { resolveShellBackgroundImage } from './utils/readerColor'
 import { resetFullscreenIntent, toggleAppFullscreen } from './composables/useAppFullscreen'
+import { useBorderlessMode } from './composables/useBorderlessMode'
 import { resolveHotkeyAction, type HotkeyActionId } from './utils/readerHotkeys'
 
 const route = useRoute()
 const appStore = useAppStore()
 const readerStore = useReaderStore()
+const { borderlessMode, toggleBorderlessMode } = useBorderlessMode()
 
 const showHeader = computed(() => route.name !== 'reader' && !appStore.miniMode)
 /* Web 端不渲染底部导航: 只剩书架和最近阅读两项, 用顶部的书架/最近入口
@@ -129,6 +145,22 @@ const stopBackgroundClassSync = watch(showCustomBackground, (active) => {
   if (typeof document === 'undefined') return
   document.body.classList.toggle('custom-background-active', active)
 }, { immediate: true })
+
+/**
+ * 纯净模式要把外壳背景一路透到窗口边缘。
+ * html/body/#app 各自带 --color-bg 底色，只要窗口边缘露出 1px 就会形成一圈
+ * 与正文异色的细边 —— 这正是「无边框了却还有痕迹」的最后一层。
+ */
+const stopBorderlessClassSync = watch(
+  [borderlessMode, () => appStore.isWebMode],
+  ([active, isWeb]) => {
+    if (typeof document === 'undefined') return
+    const enabled = Boolean(active) && !isWeb
+    document.documentElement.classList.toggle('borderless-active', enabled)
+    document.body.classList.toggle('borderless-active', enabled)
+  },
+  { immediate: true },
+)
 
 onMounted(() => {
   void appStore.runStartupVersionCheck()
@@ -268,18 +300,69 @@ function handleGlobalFullscreenKey(e: KeyboardEvent) {
   })
 }
 
+/** 4px 拖拽条上双击 = 双击原生标题栏（最大化/还原）。
+ *  data-tauri-drag-region 只负责拖动，不代劳双击，所以这里自己补。 */
+async function toggleMaximizeFromStrip() {
+  if (appStore.isWebMode || !('__TAURI_INTERNALS__' in window)) return
+  try {
+    const { getCurrentWindow } = await import('@tauri-apps/api/window')
+    const win = getCurrentWindow()
+    if (await win.isMaximized()) await win.unmaximize()
+    else await win.maximize()
+  } catch {
+    // 非桌面壳没有窗口可操作，静默忽略即可。
+  }
+}
+
+/**
+ * 全局 F12 —— 切换纯净无边框模式（对齐 binbyu/Reader 的 F12）。
+ *
+ * 与 F11 分开：F11 在阅读页要尊重可换绑的快捷键矩阵，F12 是窗口外壳级开关，
+ * 不参与阅读快捷键配置，在任何页面都应立即生效。
+ * Web 模式必须放行，否则会抢掉浏览器开发者工具。
+ */
+function handleGlobalBorderlessKey(e: KeyboardEvent) {
+  // 阅读页的 handleKeydown 先注册(子组件 mounted 早于父组件)。若用户把 F12
+  // 绑到了某个阅读动作, 那边会 preventDefault, 这里就让位, 避免一次按键两件事。
+  if (e.defaultPrevented) return
+  if (e.key !== 'F12' || e.repeat) return
+  if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return
+  if (appStore.isWebMode || !('__TAURI_INTERNALS__' in window)) return
+  const active = document.activeElement as HTMLElement | null
+  const tagName = active?.tagName?.toLowerCase()
+  if (tagName === 'input' || tagName === 'textarea' || tagName === 'select' || active?.isContentEditable) {
+    return
+  }
+  e.preventDefault()
+  const enteringPure = toggleBorderlessMode()
+  if (!enteringPure) return
+  // 切回纯净时把所有浮层一起收掉：否则用户刚在 F12 恢复的界面里打开的设置/
+  // 目录面板会继续浮在正文上，与「只剩文字」不符。
+  appStore.showSettingsDrawer = false
+  appStore.showSourceManager = false
+  appStore.showWebdavManager = false
+  appStore.showBookmarkManager = false
+  readerStore.closePanel()
+  readerStore.readerControlsVisible = false
+}
+
 onMounted(() => {
   if (typeof window === 'undefined') return
   window.addEventListener('keydown', handleGlobalFullscreenKey)
+  window.addEventListener('keydown', handleGlobalBorderlessKey)
 })
 
 onBeforeUnmount(() => {
   closeUnlisten?.()
   legadoUnlisten?.()
   stopBackgroundClassSync()
+  stopBorderlessClassSync()
   window.removeEventListener('keydown', handleGlobalFullscreenKey)
+  window.removeEventListener('keydown', handleGlobalBorderlessKey)
   if (typeof document !== 'undefined') {
     document.body.classList.remove('custom-background-active')
+    document.documentElement.classList.remove('borderless-active')
+    document.body.classList.remove('borderless-active')
   }
 })
 </script>
@@ -298,6 +381,37 @@ body {
   flex-direction: column;
   position: relative;
   transition: background var(--duration-normal);
+}
+
+/* ─── 纯净无边框模式 ───
+ * 真无边框由 Rust 侧 .decorations(false) 提供。这里只保证前端不再补回任何
+ * 边线/阴影/异色底：自绘标题栏不渲染、外壳不描边、html/body/#app 的底色
+ * 让位给 .app-shell 自己铺的阅读底色，窗口边缘就不会再留一圈细边。 */
+html.borderless-active,
+body.borderless-active,
+body.borderless-active #app {
+  background-color: transparent !important;
+}
+
+.app-shell.borderless-mode {
+  border: 0;
+  outline: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+/* 4px 全透明拖拽条：不占 flex 高度、不画 hover 态，视觉上为零。
+   z-index 高于正文，只拦窗口最顶端的指针事件。 */
+.borderless-drag-strip {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 4px;
+  z-index: calc(var(--z-modal) + 30);
+  background: transparent;
+  border: 0;
+  user-select: none;
 }
 
 .app-custom-background {

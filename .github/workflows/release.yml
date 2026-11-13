@@ -1,10 +1,19 @@
 name: Build Desktop Releases
 
+# 手动运行：Actions → Build Desktop Releases → Run workflow，release_tag 保持
+# 默认 v1.6.5 即可。fork 仓库不带上游的 GitHub Releases，见 prepare-release。
+
 on:
   push:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release 标签；须与项目版本一致（当前 v1.6.5）'
+        required: false
+        type: string
+        default: 'v1.6.5'
 
 concurrency:
   group: desktop-release-${{ github.ref }}
@@ -25,8 +34,13 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG_INPUT: ${{ inputs.release_tag || '' }}
         run: |
-          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+          # 手动 dispatch 优先用输入标签。fork 仓库通常没有已发布的 Release，
+          # 原逻辑会直接卡在 "No published Release found" 而整个构建不启动。
+          if [[ -n "$RELEASE_TAG_INPUT" ]]; then
+            release_tag="$RELEASE_TAG_INPUT"
+          elif [[ "$GITHUB_REF" == refs/tags/* ]]; then
             release_tag="$GITHUB_REF_NAME"
           elif ! release_tag="$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq '.tagName' 2>/dev/null)"; then
             echo "No published Release found" >&2

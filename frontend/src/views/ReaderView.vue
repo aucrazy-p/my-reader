@@ -72,7 +72,7 @@
       (见 backups/2026-10-05-review-fixes/)。
     -->
     <ReaderMobileControls
-      :show="showControls || !!store.activePanel"
+      :show="!borderlessMode && (showControls || !!store.activePanel)"
       :mini="appStore.miniMode"
       :can-add-to-shelf="canAddToShelf"
       :adding-to-shelf="addingToShelf"
@@ -448,6 +448,7 @@ import { ref, computed, watch, onMounted, onUnmounted, nextTick, defineAsyncComp
 import { onBeforeRouteLeave, useRouter } from 'vue-router'
 import { useReaderStore, fontPresets, TOC_END_CHECK_INTERVAL_MS } from '../stores/reader'
 import { useAppStore } from '../stores/app'
+import { useBorderlessMode } from '../composables/useBorderlessMode'
 import { useBookshelfStore } from '../stores/bookshelf'
 import { getBookInfo, getBookshelfWithCacheInfo } from '../api/bookshelf'
 import { evalSourceClick, openExternalWindow, type ShowBrowserRequest } from '../api/sourceClick'
@@ -616,11 +617,17 @@ const readerColorScheme = computed(() => store.isNight || theme.value.name === '
 
 const scrollContainerRef = ref<HTMLElement>()
 const chapterTextRef = ref<HTMLElement>()
+const { borderlessMode } = useBorderlessMode()
 /** 上/下工具栏是否呼出。代理到 store, 让标题栏(在 App 顶层渲染)也能读到,
  *  以便在呼出工具栏时从透明转为实色。 */
 const showControls = computed({
-  get: () => store.readerControlsVisible,
-  set: (value: boolean) => { store.readerControlsVisible = value },
+  get: () => borderlessMode.value ? false : store.readerControlsVisible,
+  // 纯净模式下连写入也拦掉：否则 hover/点击逻辑仍会把 store.readerControlsVisible
+  // 置成 true，虽然这里读回来恒为 false，但 TitleBar 的 needsSolidChrome 与
+  // 「按 F12 恢复界面」后的首帧都会读到这个残留值，表现为顶部突然是实色栏。
+  set: (value: boolean) => {
+    if (!borderlessMode.value) store.readerControlsVisible = value
+  },
 })
 const isMobile = ref(false)
 
@@ -756,6 +763,7 @@ function collapseControlsByClick() {
 function syncHoverPointerSupport() {
   supportsHoverPointer.value = !!hoverMediaQuery?.matches
     && !appStore.miniMode
+    && !borderlessMode.value
     && config.value.hoverRevealControls
   if (!supportsHoverPointer.value) {
     hoverPointerInZone = false
@@ -4056,9 +4064,16 @@ onMounted(async () => {
     hoverMediaQuery.addEventListener('change', syncHoverPointerSupport)
     syncHoverPointerSupport()
     hoverSupportStop = watch(
-      [() => appStore.miniMode, () => config.value.hoverRevealControls],
-      ([, hoverReveal]) => {
+      [() => appStore.miniMode, () => config.value.hoverRevealControls, () => borderlessMode.value],
+      ([, hoverReveal, borderless]) => {
         syncHoverPointerSupport()
+        // F12 切回纯净时把悬停定时器和 store 状态一起清干净, 避免残留到
+        // 下次恢复界面时突然弹出一整套工具栏。
+        if (borderless) {
+          cancelHoverHide()
+          store.readerControlsVisible = false
+          return
+        }
         // 用户刚关掉悬停展开时, 已弹出的工具栏要一并收起: 指针此后不再触发展开/收起
         // 判定, 留在屏幕上的那条工具栏只能靠点击正文中部才能关掉。
         if (!hoverReveal && showControls.value && !store.activePanel) showControls.value = false

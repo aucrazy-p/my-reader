@@ -90,7 +90,9 @@ export const useAppStore = defineStore('app', () => {
     localStorage.setItem(LEGADO_SYNC_ENABLED_KEY, value ? 'enabled' : 'disabled')
   }
 
-  const bossKeyEnabled = ref(localStorage.getItem(BOSS_KEY_KEY) === 'enabled')
+  // 默认启用：纯净无边框下窗口没有最小化/关闭按钮，老板键是唯一的一键隐藏手段。
+  // 只有显式存过 'disabled' 的老用户才保持关闭。
+  const bossKeyEnabled = ref(localStorage.getItem(BOSS_KEY_KEY) !== 'disabled')
   const savedBossKeyShortcut = localStorage.getItem(`${BOSS_KEY_KEY}-shortcut`)
   const bossKeyShortcut = ref(normalizeBossKeyShortcut(savedBossKeyShortcut))
   if (savedBossKeyShortcut !== bossKeyShortcut.value) {
