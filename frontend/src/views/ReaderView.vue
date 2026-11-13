@@ -1,4 +1,4 @@
-﻿<template>
+<template>
   <div
     class="reader-view"
     :class="{
@@ -3281,8 +3281,59 @@ function clickZoneAction(zone: 'prev' | 'menu' | 'next') {
 }
 
 
+// 行级吸附: 停手后把滚动位置对齐到「整行」, 消除上下边缘的半截行。
+// 不依赖 DOM 每行有 snap 点(那需要 mandatory, 会把长段落硬拉回段首, 体验差),
+// 而是用正文行高把 scrollTop 对齐到整数行 —— 长段停中段也只对齐到中段那一行, 不会跳回段首。
+// 仅纵向连续模式生效; 分页模式用自身整页机制, 不加。
+let scrollSnapTimer: ReturnType<typeof setTimeout> | null = null
+let isSnapping = false
+
+function measureReaderLineHeight(container: HTMLElement): number {
+  const candidates = [
+    container.querySelector('.chapter-text'),
+    container.querySelector('.continuous-chapter'),
+    container.querySelector('.epub-chapter-content'),
+  ]
+  for (const el of candidates) {
+    if (!el) continue
+    const lh = parseFloat(getComputedStyle(el as Element).lineHeight)
+    if (Number.isFinite(lh) && lh > 0) return lh
+  }
+  return 0
+}
+
+function snapScrollToLine() {
+  const container = scrollContainerRef.value
+  if (!container || isHorizontalPageMode.value) return
+  const lineHeight = measureReaderLineHeight(container)
+  if (lineHeight <= 0) return
+  const maxScroll = container.scrollHeight - container.clientHeight
+  if (maxScroll <= 0) return
+  const text = (container.querySelector('.chapter-text') ||
+    container.querySelector('.continuous-chapter') ||
+    container.querySelector('.epub-chapter-content')) as HTMLElement | null
+  if (!text) return
+  const containerRect = container.getBoundingClientRect()
+  const textRect = text.getBoundingClientRect()
+  const baseTop = textRect.top - containerRect.top + container.scrollTop
+  if (container.scrollTop < lineHeight * 1.5) return
+  if (container.scrollTop > maxScroll - lineHeight * 1.5) return
+  const targetTop = baseTop + Math.round((container.scrollTop - baseTop) / lineHeight) * lineHeight
+  if (Math.abs(targetTop - container.scrollTop) < 1) return
+  isSnapping = true
+  container.scrollTo({ top: targetTop, behavior: 'smooth' })
+  setTimeout(() => { isSnapping = false }, 320)
+}
+
+function scheduleScrollSnap() {
+  if (isHorizontalPageMode.value || isSnapping) return
+  if (scrollSnapTimer !== null) clearTimeout(scrollSnapTimer)
+  scrollSnapTimer = setTimeout(snapScrollToLine, 140)
+}
+
 function handleScroll() {
   hideSelectionMenu()
+  scheduleScrollSnap()
   const container = scrollContainerRef.value
   if (container && isContinuousMode.value && continuousChapters.value.length) {
     if (Date.now() < suppressContinuousScrollSyncUntil) {
@@ -4589,20 +4640,6 @@ watch(
  * (标准模式顶部截、F12 后上下都截，本质都是自由滚动停在任意像素、首尾行半截)。
  * 用 proximity: 只在靠近段落边界时才吸附，长段落中部或不小心滚偏时不强行拉回，
  * 手感比 mandatory 柔和。仅纵向模式生效——左右分页用自己的整页机制，加了会打架。 */
-/* 纵向滚动按段落吸附: 停手后位置强制吸附到最近段落起点(整行), 不再停在半截行。
- * 用 mandatory 而非 proximity —— proximity 只在「靠近段落边界」才吸, 长段落中段
- * 停下仍是半截(用户实测验证过)。mandatory 由浏览器原生保证每次停手都落在整行,
- * 不依赖 JS 测量, 在连续模式/网络书源下都稳定。仅纵向模式生效, 分页模式用自身整页机制。
- * 已知权衡: 长段落中段会被拉回段首(优先保证「不截断」)。 */
-.reader-scroll-container:not(.horizontal-page-mode) {
-  scroll-snap-type: y mandatory;
-}
-.reader-scroll-container:not(.horizontal-page-mode) :deep(.chapter-text p),
-.reader-scroll-container:not(.horizontal-page-mode) :deep(.chapter-text > *),
-.reader-scroll-container:not(.horizontal-page-mode) :deep(.continuous-chapter) {
-  scroll-snap-align: start;
-  scroll-snap-stop: normal;
-}
 
 /* 听书面板浮在正文之上、不参与滚动。分页模式下正文高度恒等于一屏,
    被面板压住的那几行永远翻不出来, 所以面板在时给容器让出底部空间:
