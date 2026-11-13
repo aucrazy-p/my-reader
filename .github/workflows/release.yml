@@ -95,7 +95,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     permissions:
-      contents: write
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -187,18 +187,14 @@ jobs:
           RELEASE_ARCH: ${{ matrix.arch }}
         run: node scripts/collect-desktop-artifacts.mjs
 
+      # 产物统一由 publish-release 汇总上传：避免多平台并发 gh release upload，
+      # 也避免 gh 从 upstream remote 推断出错误的目标仓库。
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: Reader-${{ needs.prepare-release.outputs.release_tag }}-${{ matrix.platform }}-${{ matrix.arch }}
           path: release/*
           if-no-files-found: error
-
-      - name: Upload platform files to Release
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${{ needs.prepare-release.outputs.release_tag }}" release/* --clobber
 
   publish-release:
     name: Publish GitHub Release
@@ -210,13 +206,55 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: write
+      actions: read
     steps:
+      - name: Download platform artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: Reader-${{ needs.prepare-release.outputs.release_tag }}-*
+          path: release
+          merge-multiple: true
+
       - name: Publish completed Release
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.prepare-release.outputs.release_tag }}
         run: |
+          # 所有 gh 调用显式带 --repo，绝不让 gh 从 git remote 推断仓库；
+          # stderr 逐行转成 ::error::，失败原因直接出现在 Annotations。
+          gh_checked() {
+            local output line
+            if output="$(gh "$@" 2>&1)"; then
+              [[ -n "$output" ]] && printf '%s\n' "$output" >&2
+              return 0
+            fi
+            printf '%s\n' "$output" >&2
+            while IFS= read -r line || [[ -n "$line" ]]; do
+              [[ -z "$line" ]] && continue
+              line="${line//%/%25}"
+              line="${line//$'\r'/}"
+              line="${line//$'\n'/}"
+              echo "::error::gh $1 失败: $line"
+            done <<< "$output"
+            return 1
+          }
+
+          shopt -s nullglob
+          files=(release/*)
+          if (( ${#files[@]} == 0 )); then
+            echo "::error::没有可上传的产物文件，请检查 Download platform artifacts 步骤"
+            exit 1
+          fi
+          echo "准备上传 ${#files[@]} 个文件："
+          printf '  %s\n' "${files[@]}"
+
           # 先结束草稿状态，再单独设置 latest，避免 GitHub API 在同一请求中
           # 先校验 latest 而把仍处于 draft 状态的 Release 判定为无效。
-          gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false
-          gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --latest
+          gh_checked release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false || exit 1
+          gh_checked release upload "$RELEASE_TAG" "${files[@]}" --repo "$GITHUB_REPOSITORY" --clobber || {
+            echo "::error::产物上传失败；重跑本 workflow 可用 --clobber 补齐安装包"
+            exit 1
+          }
+          gh_checked release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --latest || exit 1
+          echo "Release $RELEASE_TAG 已发布，包含 ${#files[@]} 个产物文件"
