@@ -4584,6 +4584,20 @@ watch(
   overscroll-behavior: none;
 }
 
+/* 纵向滚动按段落吸附: 停手后阅读位置落到「整段/整行」起点，不再停在半截行上
+ * (标准模式顶部截、F12 后上下都截，本质都是自由滚动停在任意像素、首尾行半截)。
+ * 用 proximity: 只在靠近段落边界时才吸附，长段落中部或不小心滚偏时不强行拉回，
+ * 手感比 mandatory 柔和。仅纵向模式生效——左右分页用自己的整页机制，加了会打架。 */
+.reader-scroll-container:not(.horizontal-page-mode) {
+  scroll-snap-type: y proximity;
+}
+.reader-scroll-container:not(.horizontal-page-mode) :deep(.chapter-text p),
+.reader-scroll-container:not(.horizontal-page-mode) :deep(.chapter-text > *),
+.reader-scroll-container:not(.horizontal-page-mode) :deep(.continuous-chapter) {
+  scroll-snap-align: start;
+  scroll-snap-stop: normal;
+}
+
 /* 听书面板浮在正文之上、不参与滚动。分页模式下正文高度恒等于一屏,
    被面板压住的那几行永远翻不出来, 所以面板在时给容器让出底部空间:
    容器变矮 → clientHeight 变小 → 分页重建时按更矮的页高重新切页,

@@ -418,15 +418,15 @@ body.borderless-active #app {
   box-shadow: none;
 }
 
-/* 4px 全透明拖拽条：不占 flex 高度、不画 hover 态，视觉上为零。
-   z-index 高于正文，只拦窗口最顶端的指针事件。 */
+/* 无边框拖拽条：占住与标准模式标题栏等高的 32px 流内空间。
+ * 关键点：标准模式是 <TitleBar>(32px) 在文档流顶，.app-body 从 y=32 起；
+ * 无边框模式标题栏被 v-if 干掉，若这条仍是 4px 浮层(不占流)，.app-body 会
+ * 直接顶到 y=0，整页内容上移 32px —— 这就是按 F12 时「页面跳变/变大」的根因。
+ * 改成 32px 流内透明条后，两种模式 .app-body 起点都锁在 y=32，切换不再跳动；
+ * 它透明 + data-tauri-drag-region，既是拖拽区又不画任何边线，视觉仍纯净无边框。 */
 .borderless-drag-strip {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 4px;
-  z-index: calc(var(--z-modal) + 30);
+  flex-shrink: 0;
+  height: var(--titlebar-height, 32px);
   background: transparent;
   border: 0;
   user-select: none;
