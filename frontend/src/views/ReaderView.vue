@@ -1,7 +1,10 @@
 <template>
   <div
     class="reader-view"
-    :class="{ 'disable-system-callout': disableSystemCallout }"
+    :class="{
+      'disable-system-callout': disableSystemCallout,
+      'viewport-inset-mode': !isHorizontalPageMode,
+    }"
     :style="{
       background: shellPaintsBackground ? 'transparent' : theme.body,
       color: theme.fontColor,
@@ -10,6 +13,8 @@
       '--color-primary': '#c97f3a',
       '--reader-selection-bg': theme.fontColor,
       '--reader-selection-color': selectionTextColor,
+      '--reader-side-padding': config.pageSidePadding + 'px',
+      '--reader-page-vertical-padding': config.pageVerticalPadding + 'px',
     }"
     @click="handleBackgroundClick"
     @pointermove="handleReaderPointerMove"
@@ -4437,6 +4442,26 @@ watch(
   box-sizing: border-box;
 }
 
+/* 视口级留白 —— 边距属于「当前这一屏」, 不属于整章内容流。
+ * padding 挂在 .reader-view 而不是 .chapter-content: 前者有 overflow:hidden,
+ * 滚动容器被限制在 content box 内, 四边留白是 .reader-view 自己的底色/背景图,
+ * 正文永远滚不进去。于是窗口拉伸到多大、滚到哪一屏, 正文离窗口四边都保持
+ * 设置项给的间距; 而挂在内容流上时, 上下留白只在章节头尾出现一次、随滚动消失。
+ * 左右分页模式不加这个 class: 那边一页 = 一屏, .horizontal-page 的 padding
+ * 天然就是页面级留白, 再叠一层会变成双倍。 */
+.reader-view.viewport-inset-mode {
+  padding: calc(var(--safe-area-top) + var(--reader-page-vertical-padding, 24px))
+           var(--reader-side-padding, 24px)
+           var(--reader-page-vertical-padding, 24px);
+}
+
+/* .continuous-chapter 同时带 chapter-content 类, 但它自带 48px 章节间隔;
+   特异性比这里低, 不排除就会被一并清零, 连续阅读的章节会挤成一坨。 */
+.reader-view.viewport-inset-mode .chapter-content:not(.continuous-chapter),
+.reader-view.viewport-inset-mode .continuous-reading {
+  padding: 0;
+}
+
 .reader-view.disable-system-callout .chapter-text,
 .reader-view.disable-system-callout .horizontal-page-content,
 .reader-view.disable-system-callout .continuous-reading {
@@ -4673,7 +4698,8 @@ watch(
 
 .chapter-content {
   margin: 0 auto;
-  /* 上下/左右边距由设置面板统一控制, 滚动 / 连续 / 左右分页三种模式共用。 */
+  /* 视口级留白由 .reader-view.viewport-inset-mode 提供; 这里这一份只在
+   * 左右分页(无 viewport-inset-mode)或窄屏兜底时生效, 避免同一层叠加双倍。 */
   padding: var(--reader-page-vertical-padding, 24px) var(--reader-side-padding, 24px);
   min-height: 100%;
   transition: all 0.3s ease;
@@ -5270,6 +5296,14 @@ watch(
 }
 
 @media (max-width: 768px) {
+  /* 窗口缩到窄屏时, 大边距(上限 200px)会把正文挤成 0 宽。这里只做上限收敛:
+     设置值仍然生效, 但左右最多 20px、上下最多 40px, 保证正文至少有宽度。 */
+  .reader-view.viewport-inset-mode {
+    padding: calc(var(--safe-area-top) + min(var(--reader-page-vertical-padding, 24px), 40px))
+             min(var(--reader-side-padding, 24px), 20px)
+             min(var(--reader-page-vertical-padding, 24px), 40px);
+  }
+
   .auto-reading-status {
     top: 8px;
     right: 10px;

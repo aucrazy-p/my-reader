@@ -392,7 +392,7 @@
       <div class="group">
         <div class="group-head">
           <h3>页面</h3>
-          <span class="group-note">滚动 / 连续 / 分页均生效</span>
+          <span class="group-note">窗口四边留白 · 拉伸后保持</span>
         </div>
         <div class="group-card">
           <div class="setting-row">

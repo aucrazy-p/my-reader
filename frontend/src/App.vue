@@ -151,6 +151,23 @@ const stopBackgroundClassSync = watch(showCustomBackground, (active) => {
  * html/body/#app 各自带 --color-bg 底色，只要窗口边缘露出 1px 就会形成一圈
  * 与正文异色的细边 —— 这正是「无边框了却还有痕迹」的最后一层。
  */
+/** DWM 窗口阴影跟随纯净模式: 带标题栏时保留投影(窗口有边界、便于辨认),
+ *  按 F12 进入纯净无边框后连 1px 白边 / Win11 圆角 / 投影一起消失。
+ *  Tauri 的 setShadow 对 undecorated 窗口在 Windows 上有效; 切换会动到 tao 的
+ *  窗口样式位, 所以紧接着重声明一次 resizable, 保住用户要的拉伸能力。
+ *  Web 模式 / 非 Tauri 环境直接跳过, 失败也静默忽略(不影响阅读)。 */
+async function syncWindowShadow(borderless: boolean) {
+  if (typeof window === 'undefined' || !('__TAURI_INTERNALS__' in window)) return
+  try {
+    const { getCurrentWindow } = await import('@tauri-apps/api/window')
+    const win = getCurrentWindow()
+    await win.setShadow(!borderless)
+    await win.setResizable(true)
+  } catch {
+    // 权限缺失或旧版运行时: 保持建窗时的无阴影状态即可。
+  }
+}
+
 const stopBorderlessClassSync = watch(
   [borderlessMode, () => appStore.isWebMode],
   ([active, isWeb]) => {
@@ -158,6 +175,7 @@ const stopBorderlessClassSync = watch(
     const enabled = Boolean(active) && !isWeb
     document.documentElement.classList.toggle('borderless-active', enabled)
     document.body.classList.toggle('borderless-active', enabled)
+    void syncWindowShadow(enabled)
   },
   { immediate: true },
 )

@@ -12,6 +12,8 @@
     "core:window:allow-close",
     "core:window:allow-is-maximized",
     "core:window:allow-set-fullscreen",
+    "core:window:allow-set-shadow",
+    "core:window:allow-set-resizable",
     "core:window:allow-hide",
     "core:window:allow-show",
     "core:window:allow-destroy",

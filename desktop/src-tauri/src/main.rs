@@ -271,10 +271,13 @@ fn start(app: &mut App, paths: &portable::Paths) -> anyhow::Result<()> {
         // 自定义标题栏: 隐藏原生边框。
         // Tauri 的 shadow 默认开启, 对 undecorated 窗口会在 Windows 上额外画
         // 1px 白边 + Win11 圆角 + DWM 投影 —— 即使前端把外壳 border/outline/shadow
-        // 全部清零, 视觉上仍留一圈「假边框」。显式关掉才能四边干净。
+        // 全部清零, 视觉上仍留一圈「假边框」。
+        // 建窗先关掉: 默认进纯净模式时不会闪一下阴影。之后由前端
+        // syncWindowShadow() 按 F12 状态运行时切换 —— 带标题栏时开阴影,
+        // 进纯净模式再关掉(见 App.vue)。
         .decorations(false)
         .shadow(false)
-        // shadow(false) 会动到 tao 的窗口样式位, 显式保留拖拽拉伸能力。
+        // shadow 切换会动到 tao 的窗口样式位, 显式保留拖拽拉伸能力。
         .resizable(true);
     // WebView2 默认把 profile 放在 `%LOCALAPPDATA%\<identifier>`, 与程序目录
     // 无关 —— 两个便携副本会共用同一份 localStorage(issue #20 第 4 条)。

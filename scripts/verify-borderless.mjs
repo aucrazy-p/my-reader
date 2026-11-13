@@ -40,9 +40,19 @@ const checks = [
     markers: ['upstream_sha', 'release_tag:'],
   },
   {
-    name: 'DWM 窗口阴影关闭',
+    name: '窗口初始无阴影且可拉伸',
     file: 'desktop/src-tauri/src/main.rs',
     markers: ['.shadow(false)', '.resizable(true)'],
+  },
+  {
+    name: 'F12 运行时切换窗口阴影',
+    file: 'frontend/src/App.vue',
+    markers: ['syncWindowShadow', 'setShadow(', 'setResizable(true)'],
+  },
+  {
+    name: '阴影与拉伸权限',
+    file: 'desktop/src-tauri/capabilities/default.json',
+    markers: ['core:window:allow-set-shadow', 'core:window:allow-set-resizable'],
   },
   {
     name: '纯净模式点击路径硬闸',
@@ -58,6 +68,11 @@ const checks = [
     name: '左右边距配置与滑块',
     file: 'frontend/src/stores/reader.ts',
     markers: ['pageSidePadding', 'READER_PAGE_SIDE_PADDING_MAX'],
+  },
+  {
+    name: '视口级边距(拉伸/滚动后保持)',
+    file: 'frontend/src/views/ReaderView.vue',
+    markers: ['viewport-inset-mode', '.reader-view.viewport-inset-mode .chapter-content'],
   },
 ]
 
