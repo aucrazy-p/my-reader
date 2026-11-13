@@ -156,12 +156,24 @@ const stopBackgroundClassSync = watch(showCustomBackground, (active) => {
  *  Tauri 的 setShadow 对 undecorated 窗口在 Windows 上有效; 切换会动到 tao 的
  *  窗口样式位, 所以紧接着重声明一次 resizable, 保住用户要的拉伸能力。
  *  Web 模式 / 非 Tauri 环境直接跳过, 失败也静默忽略(不影响阅读)。 */
-async function syncWindowShadow(borderless: boolean) {
+/**
+ * 保持窗口阴影恒为关闭。
+ *
+ * 关键修复：早期实现调用 `setShadow(!borderless)`，即不按 F12(标准模式)开阴影、
+ * 按 F12(纯净模式)关阴影。但 Windows 上对无边框窗口调用 setShadow 会改动 tao 的
+ * 窗口样式位、触发 WM_NCCALCSIZE，使客户区(可绘区)尺寸变化 —— 这正是「按 F12 整页
+ * 跳变 / 两种模式显示大小不一样」的真正根因。Rust 侧 decorations 始终为 false，
+ * F12 本不切 OS 边框，元凶是这处阴影切换。
+ *
+ * 改为阴影恒关后，F12 只改标题栏显隐与 DOM class，客户区尺寸恒定，切换不再跳变，
+ * 两种模式的阅读区大小完全一致。
+ */
+async function syncWindowShadow(_borderless: boolean) {
   if (typeof window === 'undefined' || !('__TAURI_INTERNALS__' in window)) return
   try {
     const { getCurrentWindow } = await import('@tauri-apps/api/window')
     const win = getCurrentWindow()
-    await win.setShadow(!borderless)
+    await win.setShadow(false)
     await win.setResizable(true)
   } catch {
     // 权限缺失或旧版运行时: 保持建窗时的无阴影状态即可。

@@ -3280,8 +3280,54 @@ function clickZoneAction(zone: 'prev' | 'menu' | 'next') {
   }
 }
 
+/* 滚动停止后把位置吸附到整行，消除上下边缘被截断的半截行。
+ * 仅纵向连续模式生效；分页模式用自身整页机制，不吸附。
+ * 防抖仅在「用户停手」后触发：程序滚动(TTS/翻章/位置恢复)连续不断不会停够 140ms，
+ * 因此不会被吸附打断。 */
+let scrollSnapTimer: ReturnType<typeof setTimeout> | null = null
+
+function measureReaderLineHeight(container: HTMLElement): number {
+  const sample =
+    (container.querySelector('.chapter-text p') as HTMLElement | null) ??
+    (container.querySelector('.chapter-text') as HTMLElement | null)
+  if (!sample) return 0
+  const lh = parseFloat(getComputedStyle(sample).lineHeight)
+  return Number.isFinite(lh) && lh > 0 ? lh : 0
+}
+
+function snapScrollToLine() {
+  const container = scrollContainerRef.value
+  if (!container || isHorizontalPageMode.value) return
+  const lineHeight = measureReaderLineHeight(container)
+  if (lineHeight <= 0) return
+  const maxScroll = container.scrollHeight - container.clientHeight
+  if (maxScroll <= 0) return
+  // 接近顶/底不打扰自然留白与末屏：保留窗口上下边距的整块空间。
+  if (container.scrollTop < lineHeight * 1.5) return
+  if (container.scrollTop > maxScroll - lineHeight * 1.5) return
+  const sample =
+    (container.querySelector('.chapter-text p') as HTMLElement | null) ??
+    (container.querySelector('.chapter-text') as HTMLElement | null)
+  if (!sample) return
+  const containerRect = container.getBoundingClientRect()
+  const sampleRect = sample.getBoundingClientRect()
+  // 章节首个文本行在内容流中的绝对顶位置(含章节/标题间距)，作为行对齐基准。
+  const baseTop = sampleRect.top - containerRect.top + container.scrollTop
+  const delta = container.scrollTop - baseTop
+  const targetTop = baseTop + Math.round(delta / lineHeight) * lineHeight
+  if (Math.abs(targetTop - container.scrollTop) < 1) return
+  container.scrollTo({ top: targetTop, behavior: 'smooth' })
+}
+
+function scheduleScrollSnap() {
+  if (isHorizontalPageMode.value) return
+  if (scrollSnapTimer !== null) clearTimeout(scrollSnapTimer)
+  scrollSnapTimer = setTimeout(snapScrollToLine, 140)
+}
+
 function handleScroll() {
   hideSelectionMenu()
+  scheduleScrollSnap()
   const container = scrollContainerRef.value
   if (container && isContinuousMode.value && continuousChapters.value.length) {
     if (Date.now() < suppressContinuousScrollSyncUntil) {
@@ -4588,15 +4634,9 @@ watch(
  * (标准模式顶部截、F12 后上下都截，本质都是自由滚动停在任意像素、首尾行半截)。
  * 用 proximity: 只在靠近段落边界时才吸附，长段落中部或不小心滚偏时不强行拉回，
  * 手感比 mandatory 柔和。仅纵向模式生效——左右分页用自己的整页机制，加了会打架。 */
-.reader-scroll-container:not(.horizontal-page-mode) {
-  scroll-snap-type: y proximity;
-}
-.reader-scroll-container:not(.horizontal-page-mode) :deep(.chapter-text p),
-.reader-scroll-container:not(.horizontal-page-mode) :deep(.chapter-text > *),
-.reader-scroll-container:not(.horizontal-page-mode) :deep(.continuous-chapter) {
-  scroll-snap-align: start;
-  scroll-snap-stop: normal;
-}
+/* 行级吸附已迁移到 <script> 的 snapScrollToLine(): 用户停手后把滚动位置对齐到
+ * 整数行，彻底消除上下边缘的半截行。CSS 段落级 scroll-snap 与 JS 行吸附会争抢
+ * 导致抖动，故此处不再声明 scroll-snap-*。 */
 
 /* 听书面板浮在正文之上、不参与滚动。分页模式下正文高度恒等于一屏,
    被面板压住的那几行永远翻不出来, 所以面板在时给容器让出底部空间:
