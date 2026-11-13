@@ -392,7 +392,7 @@
       <div class="group">
         <div class="group-head">
           <h3>页面</h3>
-          <span class="group-note">左右分页时生效</span>
+          <span class="group-note">滚动 / 连续 / 分页均生效</span>
         </div>
         <div class="group-card">
           <div class="setting-row">
@@ -445,6 +445,34 @@
                   step="4"
                   :value="config.pageVerticalPadding"
                   @change="commitNumber('pageVerticalPadding', $event, 0, READER_PAGE_VERTICAL_PADDING_MAX)"
+                >
+                <span>px</span>
+              </label>
+            </div>
+          </div>
+
+          <div class="setting-row">
+            <label>左右边距</label>
+            <div class="range-field">
+              <div class="range-track" :style="{ '--fill': pageSidePercent + '%' }">
+                <input
+                  type="range"
+                  class="settings-slider"
+                  min="0"
+                  :max="READER_PAGE_SIDE_PADDING_MAX"
+                  step="4"
+                  :value="config.pageSidePadding"
+                  @input="updateSlider('pageSidePadding', $event)"
+                >
+              </div>
+              <label class="range-value">
+                <input
+                  type="number"
+                  min="0"
+                  :max="READER_PAGE_SIDE_PADDING_MAX"
+                  step="4"
+                  :value="config.pageSidePadding"
+                  @change="commitNumber('pageSidePadding', $event, 0, READER_PAGE_SIDE_PADDING_MAX)"
                 >
                 <span>px</span>
               </label>
@@ -1456,6 +1484,7 @@ import {
   MS_STYLE_DEGREE_MIN,
   MS_VOLUME_MAX,
   MS_VOLUME_MIN,
+  READER_PAGE_SIDE_PADDING_MAX,
   READER_PAGE_VERTICAL_PADDING_MAX,
   READER_PAGE_WIDTH_MAX,
   READER_PAGE_WIDTH_MIN,
@@ -1555,6 +1584,7 @@ const fontSizePercent = computed(() => rangePercent(config.value.fontSize, READE
 const fontWeightPercent = computed(() => rangePercent(config.value.fontWeight, 100, 900))
 const pageWidthPercent = computed(() => rangePercent(config.value.pageWidth, READER_PAGE_WIDTH_MIN, READER_PAGE_WIDTH_MAX))
 const pageVerticalPercent = computed(() => rangePercent(config.value.pageVerticalPadding, 0, READER_PAGE_VERTICAL_PADDING_MAX))
+const pageSidePercent = computed(() => rangePercent(config.value.pageSidePadding, 0, READER_PAGE_SIDE_PADDING_MAX))
 const animateDurationPercent = computed(() => rangePercent(config.value.animateDuration, 0, 1000))
 const readerImageOpacityPercent = computed(() => readerOpacityToPercent(config.value.readerImageOpacity))
 /** 面板不透明度的有效下限（百分比整数），滑块的 min 就是它。 */
@@ -1595,7 +1625,7 @@ function updatePanelOpacityPercent(raw: string) {
 
 /** 数字框直接输入: 越界夹到区间内, 非数字回退原值。 */
 function commitNumber(
-  key: 'fontSize' | 'pageWidth' | 'pageVerticalPadding',
+  key: 'fontSize' | 'pageWidth' | 'pageVerticalPadding' | 'pageSidePadding',
   event: Event,
   min: number,
   max: number,
@@ -1996,7 +2026,7 @@ function isThemeActive(index: number) {
 }
 
 function updateSlider(
-  key: 'fontSize' | 'fontWeight' | 'animateDuration' | 'pageWidth' | 'pageVerticalPadding',
+  key: 'fontSize' | 'fontWeight' | 'animateDuration' | 'pageWidth' | 'pageVerticalPadding' | 'pageSidePadding',
   event: Event,
 ) {
   const value = Number((event.target as HTMLInputElement).value)

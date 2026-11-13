@@ -6,7 +6,11 @@ import { READER_PAGE_VERTICAL_PADDING_MAX } from '../stores/reader'
 import { parseReaderParagraph } from '../utils/readerParagraphRange'
 
 type ReaderStore = ReturnType<typeof useReaderStore>
-const HORIZONTAL_PAGE_SIDE_PADDING = 24
+/** 页容器左右 padding 与 CSS 变量 --reader-side-padding 同源, 值来自设置项。
+ *  分页行宽测量必须与 CSS 用同一个数, 否则分页位置与实际排版会错开。 */
+function sidePaddingOf(value: number): number {
+  return Number.isFinite(value) ? Math.max(0, Math.min(200, Math.round(value))) : 24
+}
 const HORIZONTAL_PAGE_MIN_BOTTOM_GUARD = 18
 const HORIZONTAL_PAGE_BOTTOM_GUARD_LINES = 0.5
 const NON_STARTING_PUNCTUATION = new Set([
@@ -343,6 +347,7 @@ export function useHorizontalPaging(
     lineHeight: number
     pageWidth: number
     pageVerticalPadding: number
+    pageSidePadding: number
     paragraphSpacing: number
     firstLineIndent: boolean
   }>,
@@ -553,7 +558,7 @@ export function useHorizontalPaging(
     horizontalPageStep.value = containerWidth
     // 可用宽度 = 屏宽扣掉页容器左右 padding。与 .horizontal-page 的 padding 一致,
     // 也必须是测量正文时用的同一个值, 否则分页与实际排版会不一致。
-    const availableWidth = Math.max(1, containerWidth - HORIZONTAL_PAGE_SIDE_PADDING * 2)
+    const availableWidth = Math.max(1, containerWidth - sidePaddingOf(config.value.pageSidePadding) * 2)
     horizontalTextWidth.value = getReaderTextWidth(availableWidth, config.value.pageWidth)
   }
 
@@ -577,7 +582,7 @@ export function useHorizontalPaging(
     // 宽度保持一致。
     const textWidth = horizontalTextWidth.value > 0
       ? horizontalTextWidth.value
-      : Math.max(120, horizontalPageStep.value - HORIZONTAL_PAGE_SIDE_PADDING * 2)
+      : Math.max(120, horizontalPageStep.value - sidePaddingOf(config.value.pageSidePadding) * 2)
     return {
       innerWidth: Math.max(120, textWidth),
       pageHeight: Math.max(160, container.clientHeight - verticalPadding * 2 - bottomGuard),
@@ -609,6 +614,7 @@ export function useHorizontalPaging(
       config.value.firstLineIndent,
       config.value.pageWidth,
       config.value.pageVerticalPadding,
+      config.value.pageSidePadding,
     ].join('::')
     // 正文换章或页尺寸变化时先把上一版页撤下，等新页构建完成再赋值。
     // 这样最大化窗口下不会在底部闪出旧页最后一行。

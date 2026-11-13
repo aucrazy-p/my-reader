@@ -269,7 +269,13 @@ fn start(app: &mut App, paths: &portable::Paths) -> anyhow::Result<()> {
         .inner_size(InitialGeometry::DEFAULT_WIDTH, InitialGeometry::DEFAULT_HEIGHT)
         .min_inner_size(min_width, min_height)
         // 自定义标题栏: 隐藏原生边框。
-        .decorations(false);
+        // Tauri 的 shadow 默认开启, 对 undecorated 窗口会在 Windows 上额外画
+        // 1px 白边 + Win11 圆角 + DWM 投影 —— 即使前端把外壳 border/outline/shadow
+        // 全部清零, 视觉上仍留一圈「假边框」。显式关掉才能四边干净。
+        .decorations(false)
+        .shadow(false)
+        // shadow(false) 会动到 tao 的窗口样式位, 显式保留拖拽拉伸能力。
+        .resizable(true);
     // WebView2 默认把 profile 放在 `%LOCALAPPDATA%\<identifier>`, 与程序目录
     // 无关 —— 两个便携副本会共用同一份 localStorage(issue #20 第 4 条)。
     // 显式指到数据目录下, 让"拷一个文件夹"真的带走全部状态。

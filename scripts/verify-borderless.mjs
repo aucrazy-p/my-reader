@@ -9,7 +9,7 @@ const checks = [
   {
     name: '纯净模式状态模块',
     file: 'frontend/src/composables/useBorderlessMode.ts',
-    markers: ['borderlessMode'],
+    markers: ['borderlessMode', 'globalThis', 'isBorderlessActive'],
   },
   {
     name: 'F12 全局切换',
@@ -38,6 +38,26 @@ const checks = [
     name: 'CI 上游同步与标签输入',
     file: '.github/workflows/release.yml',
     markers: ['upstream_sha', 'release_tag:'],
+  },
+  {
+    name: 'DWM 窗口阴影关闭',
+    file: 'desktop/src-tauri/src/main.rs',
+    markers: ['.shadow(false)', '.resizable(true)'],
+  },
+  {
+    name: '纯净模式点击路径硬闸',
+    file: 'frontend/src/views/ReaderView.vue',
+    markers: ['isBorderlessActive()', "action !== 'prevPage'", '!borderlessMode && store.activePanel'],
+  },
+  {
+    name: '边距设置三模式同源',
+    file: 'frontend/src/views/ReaderView.vue',
+    markers: ['config.pageSidePadding', 'var(--reader-page-vertical-padding'],
+  },
+  {
+    name: '左右边距配置与滑块',
+    file: 'frontend/src/stores/reader.ts',
+    markers: ['pageSidePadding', 'READER_PAGE_SIDE_PADDING_MAX'],
   },
 ]
 

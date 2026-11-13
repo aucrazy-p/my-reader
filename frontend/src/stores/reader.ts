@@ -124,6 +124,7 @@ const READER_PROGRESS_KEY = 'reader-last-progress'
 export const READER_PAGE_WIDTH_MIN = 400
 export const READER_PAGE_WIDTH_MAX = 2000
 export const READER_PAGE_VERTICAL_PADDING_MAX = 200
+export const READER_PAGE_SIDE_PADDING_MAX = 200
 
 export interface ReadConfig {
   fontSize: number
@@ -134,8 +135,10 @@ export interface ReadConfig {
   firstLineIndent: boolean
   fontColor: string
   pageWidth: number
-  /** 左右分页时每页正文的上下留白, 像素。 */
+  /** 正文区上下留白, 像素。滚动 / 连续 / 左右分页三种模式共用。 */
   pageVerticalPadding: number
+  /** 正文区左右留白, 像素。三种模式共用; 左右分页时同步用于分页行宽测量。 */
+  pageSidePadding: number
   readMethod: '上下滑动' | '左右翻页' | '上下滚动' | '上下滚动2'
   animateDuration: number
   /** 自动阅读滚动速度, 像素/秒。 */
@@ -191,6 +194,7 @@ const defaultConfig: ReadConfig = {
   fontColor: '',
   pageWidth: 800,
   pageVerticalPadding: 24,
+  pageSidePadding: 24,
   readMethod: '上下滑动',
   animateDuration: 300,
   autoScrollSpeed: 30,
@@ -292,6 +296,12 @@ function loadConfig(): ReadConfig {
               Math.max(0, Math.round(savedConfig.pageVerticalPadding)),
             )
           : defaultConfig.pageVerticalPadding,
+        pageSidePadding: typeof savedConfig.pageSidePadding === 'number'
+          ? Math.min(
+              READER_PAGE_SIDE_PADDING_MAX,
+              Math.max(0, Math.round(savedConfig.pageSidePadding)),
+            )
+          : defaultConfig.pageSidePadding,
         autoScrollSpeed: typeof savedConfig.autoScrollSpeed === 'number' && savedConfig.autoScrollSpeed > 0
           ? Math.min(500, Math.max(2, Math.round(savedConfig.autoScrollSpeed)))
           : Math.min(500, Math.max(2, Math.round(legacyAutoScrollSpeed))),

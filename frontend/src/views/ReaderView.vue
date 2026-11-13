@@ -34,11 +34,11 @@
     <!-- Left Drawer Panels -->
     <Teleport to="body">
       <Transition name="fade">
-        <div v-if="store.activePanel" class="reader-overlay" @click="store.closePanel()"></div>
+        <div v-if="!borderlessMode && store.activePanel" class="reader-overlay" @click="store.closePanel()"></div>
       </Transition>
       <Transition name="slide-left">
         <div
-          v-if="store.activePanel"
+          v-if="!borderlessMode && store.activePanel"
           class="reader-drawer"
           :class="{
             'with-custom-background': hasReaderBackground,
@@ -203,7 +203,7 @@
           fontWeight: config.fontWeight,
           lineHeight: config.lineHeight,
           '--reader-page-width': config.pageWidth + 'px',
-          '--reader-side-padding': '24px',
+          '--reader-side-padding': config.pageSidePadding + 'px',
           '--reader-page-vertical-padding': config.pageVerticalPadding + 'px',
           '--reader-page-step': horizontalPageStepStyle,
           '--reader-text-width': horizontalTextWidth + 'px',
@@ -283,6 +283,8 @@
           fontSize: config.fontSize + 'px',
           fontWeight: config.fontWeight,
           lineHeight: config.lineHeight,
+          '--reader-side-padding': config.pageSidePadding + 'px',
+          '--reader-page-vertical-padding': config.pageVerticalPadding + 'px',
         }"
       >
         <div v-if="continuousLoadingPrev" class="continuous-loading-inline">正在加载上一章...</div>
@@ -448,7 +450,7 @@ import { ref, computed, watch, onMounted, onUnmounted, nextTick, defineAsyncComp
 import { onBeforeRouteLeave, useRouter } from 'vue-router'
 import { useReaderStore, fontPresets, TOC_END_CHECK_INTERVAL_MS } from '../stores/reader'
 import { useAppStore } from '../stores/app'
-import { useBorderlessMode } from '../composables/useBorderlessMode'
+import { isBorderlessActive, useBorderlessMode } from '../composables/useBorderlessMode'
 import { useBookshelfStore } from '../stores/bookshelf'
 import { getBookInfo, getBookshelfWithCacheInfo } from '../api/bookshelf'
 import { evalSourceClick, openExternalWindow, type ShowBrowserRequest } from '../api/sourceClick'
@@ -626,6 +628,12 @@ const showControls = computed({
   // 置成 true，虽然这里读回来恒为 false，但 TitleBar 的 needsSolidChrome 与
   // 「按 F12 恢复界面」后的首帧都会读到这个残留值，表现为顶部突然是实色栏。
   set: (value: boolean) => {
+    // 再兜一道: 写入时实时读 <html> 的 class, 跨 chunk 可靠, 且不会像 computed
+    // getter 那样因缓存/时序在切回界面后卡住。
+    if (value && isBorderlessActive()) {
+      store.readerControlsVisible = false
+      return
+    }
     if (!borderlessMode.value) store.readerControlsVisible = value
   },
 })
@@ -1608,6 +1616,7 @@ const {
     lineHeight: config.value.lineHeight,
     pageWidth: config.value.pageWidth,
     pageVerticalPadding: config.value.pageVerticalPadding,
+    pageSidePadding: config.value.pageSidePadding,
     paragraphSpacing: config.value.paragraphSpacing,
     firstLineIndent: config.value.firstLineIndent,
   })),
@@ -3097,6 +3106,8 @@ async function refreshFromContextMenu() {
 }
 
 function handleGlobalClick(e: MouseEvent) {
+  // 纯净模式下抽屉一律不认，点击照常走翻页分派；会呼出 UI 的动作在下方硬闸拦掉。
+  if (isBorderlessActive() && store.activePanel) store.closePanel()
   if (store.activePanel) return
   closeReaderContextMenu()
   if (suppressNextReaderClick.value) {
@@ -3163,6 +3174,14 @@ function handleGlobalClick(e: MouseEvent) {
  * 逻辑：`pageForward` 自己会处理左右分页、章节边界与自动滚动中断，直接调它即可。
  */
 function runClickAreaAction(action: ClickAreaAction) {
+  // 纯净无边框：正文点击只放行翻页/换章，其余（菜单、目录、搜索、听书、书签）
+  // 一律忽略。判定用 <html> 的 class，跨 chunk 可靠，不依赖共享状态是否分叉。
+  if (isBorderlessActive()
+    && action !== 'prevPage'
+    && action !== 'nextPage'
+    && action !== 'prevChapter'
+    && action !== 'nextChapter'
+    && action !== 'none') return
   switch (action) {
     case 'menu':
       if (showControls.value) collapseControlsByClick()
@@ -3208,6 +3227,8 @@ function runClickAreaAction(action: ClickAreaAction) {
 
 function clickZoneAction(zone: 'prev' | 'menu' | 'next') {
   if (zone === 'menu') {
+    // 纯净模式点正文中部不得呼出工具栏。
+    if (isBorderlessActive()) return
     // 宽屏也走"点击正文中部呼出控件": 阅读页控件已统一为 ReaderMobileControls,
     // 不再有"鼠标移到边缘滑出竖栏"这条宽屏专属路径, 这里不能再按 isMobile 拦截,
     // 否则大窗口下点了中部什么都不会发生。
@@ -4202,7 +4223,7 @@ watch(() => store.currentIndex, () => {
 // 按**阅读进度比例**把位置映射到新分页, 而不是一律回到第一页 —— 否则在设置里
 // 拖一下字号或页宽就会跳回本章开头, 还会把这个 0 进度写回书架。
 watch(
-  [() => config.value.fontSize, () => config.value.fontWeight, () => config.value.lineHeight, () => config.value.paragraphSpacing, () => config.value.firstLineIndent, () => config.value.pageWidth, () => config.value.pageVerticalPadding],
+  [() => config.value.fontSize, () => config.value.fontWeight, () => config.value.lineHeight, () => config.value.paragraphSpacing, () => config.value.firstLineIndent, () => config.value.pageWidth, () => config.value.pageVerticalPadding, () => config.value.pageSidePadding],
   () => {
     if (!isHorizontalPageMode.value) return
     const previousMax = Math.max(0, horizontalPages.value.length - 1)
@@ -4652,7 +4673,8 @@ watch(
 
 .chapter-content {
   margin: 0 auto;
-  padding: 80px 24px;
+  /* 上下/左右边距由设置面板统一控制, 滚动 / 连续 / 左右分页三种模式共用。 */
+  padding: var(--reader-page-vertical-padding, 24px) var(--reader-side-padding, 24px);
   min-height: 100%;
   transition: all 0.3s ease;
 }
@@ -4705,8 +4727,8 @@ watch(
 /* 一页 = 一屏：宽度恒等于容器宽(--reader-page-step 由 JS 写为容器宽)。
    正文的**行宽**由里面的 .horizontal-page-content 单独控制, 并在页内居中,
    所以宽窗口下是「正文居中 + 两侧留白」, 而不是一屏并排显示两页。
-   这里的左右 padding 必须与 useHorizontalPaging 的 HORIZONTAL_PAGE_SIDE_PADDING
-   保持一致 —— 那边用它算行宽的可用宽度, 不一致会让测量与实际排版不符。
+   这里的左右 padding 由 --reader-side-padding(设置项 pageSidePadding) 提供,
+   useHorizontalPaging 用同一个值算行宽的可用宽度, 两边必须始终同源。
 
    每页**各自**用 transform 定位(见 horizontalPageTransform): 当前页位移为 0,
    其余页平移 ±n 个屏宽。这样每个合成层都只有一页大小, 不存在超宽层; 翻页动画
@@ -4729,13 +4751,14 @@ watch(
 
 .continuous-reading {
   margin: 0 auto;
-  padding: 32px 0 80px;
+  /* 边距只在外层加一次; 内层 .continuous-chapter 只保留章节之间的间隔。 */
+  padding: var(--reader-page-vertical-padding, 24px) var(--reader-side-padding, 24px);
 }
 
 .continuous-chapter {
   min-height: auto;
-  padding-top: 48px;
-  padding-bottom: 24px;
+  /* 简写会覆盖 .chapter-content 的 padding, 左右归零避免与外层叠加成双倍留白。 */
+  padding: 48px 0 24px;
 }
 
 .chapter-title {
