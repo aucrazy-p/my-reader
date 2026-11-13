@@ -4435,6 +4435,12 @@ watch(
   height: 100%;
   width: 100%;
   display: flex;
+  /* 纵向排布: 唯一在文档流内的子元素 .reader-scroll-container 靠 flex:1 在父级
+   * 内容盒(已扣除上下 padding)内精确拉伸, 四边留白始终是 .reader-view 自己的
+   * 底色, 正文永远滚不进去。早先用 height:100% 在 box-sizing:border-box 的父级上
+   * 会被解析成「边框盒高度」而非「内容盒高度」, 滚动容器因此比可用区高出一截、
+   * 被 overflow:hidden 从底部裁掉, 表现为: 顶边距正常、底边距消失、末行被切。 */
+  flex-direction: column;
   position: relative;
   overflow: hidden;
   transition: background 0.3s, color 0.3s;
@@ -4552,8 +4558,11 @@ watch(
 }
 
 .reader-scroll-container {
-  flex: 1;
-  height: 100%;
+  flex: 1 1 auto;
+  /* 关键: 允许 flex 子项收缩到内容盒高度以下, 否则百分比高度(旧 height:100%)在
+   * border-box 父级上解析为边框盒高度, 滚动容器溢出被裁, 底边距被吃掉、末行被切。 */
+  min-height: 0;
+  min-width: 0;
   overflow-y: auto;
   overflow-anchor: none;
   position: relative;
