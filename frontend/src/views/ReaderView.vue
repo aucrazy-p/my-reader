@@ -3286,10 +3286,21 @@ function clickZoneAction(zone: 'prev' | 'menu' | 'next') {
  * 因此不会被吸附打断。 */
 let scrollSnapTimer: ReturnType<typeof setTimeout> | null = null
 
+/** 取正文首个文本行元素：优先章节正文 <p>，兼容 EPUB(.epub-chapter-content) 与
+ *  任何带文本的块级元素。早期实现只查 `.chapter-text p`，读 EPUB 时选择器落空、
+ *  lineHeight 返回 0、吸附完全失效 —— 这正是不少书「滚动照常截断」的根因。 */
+function firstReaderLineEl(container: HTMLElement): HTMLElement | null {
+  return (
+    (container.querySelector('.chapter-text p') as HTMLElement | null) ||
+    (container.querySelector('.epub-chapter-content p') as HTMLElement | null) ||
+    (container.querySelector('.chapter-text') as HTMLElement | null) ||
+    (container.querySelector('.epub-chapter-content') as HTMLElement | null) ||
+    (container.querySelector('p') as HTMLElement | null)
+  )
+}
+
 function measureReaderLineHeight(container: HTMLElement): number {
-  const sample =
-    (container.querySelector('.chapter-text p') as HTMLElement | null) ??
-    (container.querySelector('.chapter-text') as HTMLElement | null)
+  const sample = firstReaderLineEl(container)
   if (!sample) return 0
   const lh = parseFloat(getComputedStyle(sample).lineHeight)
   return Number.isFinite(lh) && lh > 0 ? lh : 0
@@ -3302,12 +3313,11 @@ function snapScrollToLine() {
   if (lineHeight <= 0) return
   const maxScroll = container.scrollHeight - container.clientHeight
   if (maxScroll <= 0) return
-  // 接近顶/底不打扰自然留白与末屏：保留窗口上下边距的整块空间。
-  if (container.scrollTop < lineHeight * 1.5) return
-  if (container.scrollTop > maxScroll - lineHeight * 1.5) return
-  const sample =
-    (container.querySelector('.chapter-text p') as HTMLElement | null) ??
-    (container.querySelector('.chapter-text') as HTMLElement | null)
+  // 仅在几乎贴住绝对底/顶时才放手，避免把末屏/首页强行拉离；
+  // 其余位置都吸附到整数行，保证停手后首尾都是整行、不再半截。
+  if (container.scrollTop < lineHeight * 0.5) return
+  if (container.scrollTop > maxScroll - lineHeight * 0.5) return
+  const sample = firstReaderLineEl(container)
   if (!sample) return
   const containerRect = container.getBoundingClientRect()
   const sampleRect = sample.getBoundingClientRect()
