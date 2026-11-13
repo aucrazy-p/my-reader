@@ -1,7 +1,9 @@
 name: Build Desktop Releases
 
-# 手动运行：Actions → Build Desktop Releases → Run workflow，release_tag 保持
-# 默认 v1.6.5 即可。fork 仓库不带上游的 GitHub Releases，见 prepare-release。
+# 手动运行：Actions → Build Desktop Releases → Run workflow，release_tag 留空即可。
+# 每次构建先拉取 hadc188/reader 当时最新的 main 并合并，再校验自定义功能，
+# 产物 = 最新上游 + 本仓库的无边框改动。fork 仓库不带上游的 Releases，
+# release_tag 留空时自动取上游 Cargo.toml 里的项目版本号。
 
 on:
   push:
@@ -10,10 +12,10 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: 'Release 标签；须与项目版本一致（当前 v1.6.5）'
+        description: 'Release 标签；留空则自动取上游项目版本'
         required: false
         type: string
-        default: 'v1.6.5'
+        default: ''
 
 concurrency:
   group: desktop-release-${{ github.ref }}
@@ -28,20 +30,48 @@ jobs:
       contents: write
     outputs:
       release_tag: ${{ steps.release.outputs.release_tag }}
+      upstream_sha: ${{ steps.upstream.outputs.sha }}
     steps:
+      - name: Resolve latest upstream
+        id: upstream
+        shell: bash
+        env:
+          UPSTREAM_URL: https://github.com/hadc188/reader.git
+          UPSTREAM_RAW: https://raw.githubusercontent.com/hadc188/reader
+        run: |
+          # 锁定本次构建使用的上游提交：三个平台共用同一个 sha，避免构建期间
+          # 上游又推了新提交，导致各平台产物来自不同代码。
+          sha="$(git ls-remote "$UPSTREAM_URL" refs/heads/main | cut -f1)"
+          if [[ -z "$sha" ]]; then
+            echo "::error::无法解析上游 main 的提交"
+            exit 1
+          fi
+          version="$(curl -fsSL "$UPSTREAM_RAW/$sha/Cargo.toml" | grep -m1 '^version' | cut -d '"' -f2)"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+            echo "::error::无法从上游 Cargo.toml 读取有效的项目版本号"
+            exit 1
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "version=v$version" >> "$GITHUB_OUTPUT"
+          echo "Upstream: $sha (v$version)"
+
       - name: Resolve Release target
         id: release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG_INPUT: ${{ inputs.release_tag || '' }}
+          UPSTREAM_TAG: ${{ steps.upstream.outputs.version }}
         run: |
-          # 手动 dispatch 优先用输入标签。fork 仓库通常没有已发布的 Release，
-          # 原逻辑会直接卡在 "No published Release found" 而整个构建不启动。
+          # 手动 dispatch 优先用输入标签；留空则用本次锁定的上游版本号。
+          # fork 仓库通常没有已发布的 Release，原逻辑会直接卡在
+          # "No published Release found" 而整个构建不启动。
           if [[ -n "$RELEASE_TAG_INPUT" ]]; then
             release_tag="$RELEASE_TAG_INPUT"
           elif [[ "$GITHUB_REF" == refs/tags/* ]]; then
             release_tag="$GITHUB_REF_NAME"
+          elif [[ -n "$UPSTREAM_TAG" ]]; then
+            release_tag="$UPSTREAM_TAG"
           elif ! release_tag="$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq '.tagName' 2>/dev/null)"; then
             echo "No published Release found" >&2
             exit 1
@@ -91,6 +121,30 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Merge latest upstream
+        shell: bash
+        env:
+          UPSTREAM_URL: https://github.com/hadc188/reader.git
+          UPSTREAM_SHA: ${{ needs.prepare-release.outputs.upstream_sha }}
+        run: |
+          # 只合并到 runner 工作区，绝不 push 回仓库：origin/main 始终保留
+          # 我们的自定义提交，workflow 自身也不会被上游版本覆盖。
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream "$UPSTREAM_URL"
+          git fetch --no-tags upstream main
+          if ! git merge --no-edit "$UPSTREAM_SHA"; then
+            echo "::error::合并上游失败，需人工解冲突后推送到 main 再重新构建"
+            git diff --name-only --diff-filter=U || true
+            exit 1
+          fi
+          echo "Merged upstream: $UPSTREAM_SHA"
+
+      - name: Verify custom borderless features
+        run: node scripts/verify-borderless.mjs
 
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
