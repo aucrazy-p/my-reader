@@ -2947,9 +2947,13 @@ function getPageStep(container: HTMLElement) {
 }
 
 /** 按「动画时长」设置滚动: 0 为瞬时, 其余走补间。
- *  容器 CSS scroll-behavior 已改为 auto, 平滑只能由此处显式提供。 */
+ *  容器 CSS scroll-behavior 已改为 auto, 平滑只能由此处显式提供。
+ *  翻页落点先对齐到真实行沿, 否则均匀网格步长逐页累积偏差, 停手后吸附会再
+ *  smooth 拉一次(每页 9~11px 回弹)。对齐后吸附 delta=0, 自然不动。
+ *  见 docs/reader-line-grid.md 第 10 条; 仅纵向翻页路径, 其他输入不碰。 */
 function scrollPageBy(container: HTMLElement, delta: number) {
-  animatePageScrollBy(container, delta, config.value.animateDuration)
+  const alignedTop = lineGrid.alignPageTarget(container, container.scrollTop + delta)
+  animatePageScrollBy(container, alignedTop - container.scrollTop, config.value.animateDuration)
 }
 
 // Click behavior

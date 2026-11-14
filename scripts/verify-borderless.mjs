@@ -93,6 +93,7 @@ const checks = [
       'const lineGrid = useReaderLineGrid({',
       'lineGrid.scheduleSnap()',
       'lineGrid.sync()',
+      'lineGrid.alignPageTarget(',
       '--reader-line-remainder',
     ],
   },
@@ -104,7 +105,7 @@ const checks = [
   {
     name: '几何断言脚本',
     file: 'scripts/verify-line-grid.mjs',
-    markers: ['chromium', 'topCut', 'bottomCut', 'VIEWPORTS'],
+    markers: ['chromium', 'topCut', 'bottomCut', 'VIEWPORTS', '__smoothScrolls', '翻页零回弹'],
   },
 ]
 

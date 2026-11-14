@@ -22,7 +22,7 @@ const SCROLL_POINTS = [0, 12, 48.6, 1000.3, 1700.6, 2600.4]
 const TOLERANCE = 1.0
 
 const para = (n) => '　　这是一段用于复现阅读截断问题的网络小说正文，第' + n + '段。'.repeat(4)
-const content = Array.from({ length: 90 }, (_, i) => para(i + 1)).join('\n')
+const content = Array.from({ length: 160 }, (_, i) => para(i + 1)).join('\n')
 const session = {
   book: {
     bookUrl: 'https://example.test/book/1', name: '截断测试书', author: '测试',
@@ -104,7 +104,18 @@ try {
   browser = await launchBrowser()
   const page = await browser.newPage({ viewport: { width: 1180, height: 800 } })
   page.on('pageerror', (e) => failures.push(`页面异常: ${e.message}`))
-  await page.addInitScript((s) => localStorage.setItem('reader-last-session', JSON.stringify(s)), session)
+  await page.addInitScript((s) => {
+    localStorage.setItem('reader-last-session', JSON.stringify(s))
+    // 记录所有 smooth 滚动：翻页路径不应产生任何一次（吸附不该二次修正）。
+    window.__smoothScrolls = []
+    const original = Element.prototype.scrollTo
+    Element.prototype.scrollTo = function (opts) {
+      if (opts && typeof opts === 'object' && opts.behavior === 'smooth') {
+        window.__smoothScrolls.push(+Number(opts.top).toFixed(1))
+      }
+      return original.call(this, opts)
+    }
+  }, session)
   await page.route('**/reader3/**', async (route) => {
     const p = (route.request().url().split('/reader3/')[1] || '').split('?')[0]
     let data = {}
@@ -156,6 +167,45 @@ try {
   }
   console.log(`滚轮稳定性: ${a && b ? (Math.abs(b.scrollTop - a.scrollTop).toFixed(1) + 'px 漂移') : '未取到数据'}`)
 
+  // 连续空格翻页：补间停住后不得再被吸附拉一次（约定第 10 条）。
+  // 补间默认 300ms ≈ 12 帧(25ms)，第 16 帧(400ms)之后若仍有位移即为回弹。
+  await page.evaluate(() => {
+    document.querySelector('.reader-scroll-container').scrollTop = 0
+    window.__smoothScrolls = []
+  })
+  await page.waitForTimeout(600)
+  console.log('\n翻页 | 400ms位置 | 稳定位置 | 二次位移 | 顶/底切 | 结果')
+  let worstBounce = 0
+  for (let k = 1; k <= 6; k++) {
+    await page.keyboard.press('Space')
+    const series = []
+    for (let i = 0; i < 48; i++) {
+      series.push(await page.evaluate(() => +document.querySelector('.reader-scroll-container').scrollTop.toFixed(1)))
+      await page.waitForTimeout(25)
+    }
+    const early = series[16]
+    const final = series[series.length - 1]
+    let lastChange = 0
+    for (let i = 1; i < series.length; i++) if (series[i] !== series[i - 1]) lastChange = i
+    const bounce = lastChange > 16 ? +(final - early).toFixed(1) : 0
+    worstBounce = Math.max(worstBounce, Math.abs(bounce))
+    const m = await measure(page)
+    const cuts = m ? `${m.topCut}/${m.bottomCut}` : 'n/a'
+    const ok = Math.abs(bounce) <= TOLERANCE
+      && (!m || (m.topCut <= TOLERANCE && m.bottomCut <= TOLERANCE))
+    console.log(`${String(k).padEnd(4)} | ${String(early).padEnd(9)} | ${String(final).padEnd(9)} | ${String(bounce).padEnd(9)} | ${cuts.padEnd(8)} | ${ok ? 'ok' : 'FAIL'}`)
+    if (Math.abs(bounce) > TOLERANCE) failures.push(`第 ${k} 次空格翻页后二次位移 ${bounce}px`)
+    if (m && (m.topCut > TOLERANCE || m.bottomCut > TOLERANCE)) {
+      failures.push(`第 ${k} 次翻页后切行 top ${m.topCut}px / bottom ${m.bottomCut}px`)
+    }
+    await page.waitForTimeout(400)
+  }
+  const smoothCalls = await page.evaluate(() => window.__smoothScrolls)
+  if (smoothCalls.length) {
+    failures.push(`翻页路径产生了 ${smoothCalls.length} 次 smooth 吸附: ${smoothCalls.join(', ')}`)
+  }
+  console.log(`翻页零回弹: 最差 ${worstBounce.toFixed(1)}px, smooth 吸附调用 ${smoothCalls.length} 次`)
+
   if (!a?.remainder || parseFloat(a.remainder) < 0) {
     failures.push('未检测到 --reader-line-remainder，挂载点可能被上游冲掉')
   }
@@ -170,5 +220,5 @@ if (failures.length) {
   console.error(`\n整行排版校验失败（阈值 ${TOLERANCE}px）:\n  - ${failures.join('\n  - ')}`)
   process.exitCode = 1
 } else {
-  console.log(`\nLine grid verified: ${VIEWPORTS.length} 个视口 × ${SCROLL_POINTS.length} 个滚动位置，上下边界零截断`)
+  console.log(`\nLine grid verified: ${VIEWPORTS.length} 个视口 × ${SCROLL_POINTS.length} 个滚动位置，上下边界零截断；连续 6 次空格翻页零回弹`)
 }

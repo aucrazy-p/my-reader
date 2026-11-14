@@ -262,6 +262,73 @@ export function useReaderLineGrid(options: LineGridOptions) {
     snapTimer = setTimeout(snapScrollToLine, 140)
   }
 
+  /**
+   * 翻页目标预先对齐：把吸附的「事后修正」前移到翻页决策里（约定第 10 条）。
+   *
+   * getPageStep() 用 floor(clientHeight / 行高) × 行高 作步长，假设正文是均匀
+   * 行网格；段距/标题/图片会破坏它，翻页落点逐页偏离真实行沿，停手 140ms 后
+   * 吸附再 smooth 拉一次（实测连续翻页每页回弹 9~11px），即「文字上下晃动」。
+   *
+   * 这里在原始目标 ± 一行内，按内容流坐标的真实行沿挑一个上下边界都零截断的
+   * 落点，翻页补间直接停在那里；吸附再评分时 score(0)=0、delta=0，自然不动。
+   * 吸附本身不删不改，继续为滚轮/触控板/滚动条等自由滚动兜底。
+   */
+  function alignPageTarget(container: HTMLElement | null | undefined, rawTop: number): number {
+    if (!container || disposed || options.isHorizontal()) return rawTop
+    const lineHeight = measureReaderLineHeight(container, options)
+    if (!(lineHeight > 0)) return rawTop
+    const maxScroll = Math.max(0, container.scrollHeight - container.clientHeight)
+    const target = round(Math.max(0, Math.min(maxScroll, rawTop)))
+    const height = container.clientHeight
+    // 内容流坐标，多取两行保证跨边界的长行也在集合里。
+    const rects = collectFlowRects(container, target - lineHeight * 2, target + height + lineHeight * 2)
+    if (!rects.length) return target
+
+    // 与 snapScrollToLine 的 edgeCut 评分同构（顶边权重更高），只是换成内容流坐标：
+    // 顶边 = t，底边 = t + height。两者一致，翻页后吸附才不会二次修正。
+    const cutTop = (t: number) => {
+      let worst = 0
+      for (const line of rects) {
+        if (line.top >= t - 1 || line.bottom <= t + 1) continue
+        const cut = t - line.top
+        if (cut > worst) worst = cut
+      }
+      return worst
+    }
+    const cutBottom = (t: number) => cutAt(rects, t + height)
+    const score = (t: number) => cutTop(t) * 2 + cutBottom(t)
+
+    const candidates = new Set<number>([target])
+    for (const line of rects) {
+      for (const edge of [line.top, line.bottom]) {
+        // 顶边落在行沿
+        if (Math.abs(edge - target) <= lineHeight) candidates.add(round(edge))
+        // 底边落在行沿，反推顶边
+        const t = edge - height
+        if (Math.abs(t - target) <= lineHeight) candidates.add(round(t))
+      }
+    }
+    // 行沿稀疏/大段空白时补 1px 细扫，保证至少能找到零截断区间。
+    for (let t = target - lineHeight; t <= target + lineHeight; t += 1) {
+      candidates.add(round(Math.max(0, Math.min(maxScroll, t))))
+    }
+
+    let best = target
+    let bestScore = score(best)
+    let bestDist = 0
+    for (const t of candidates) {
+      if (t < 0 || t > maxScroll + 0.5) continue
+      const s = score(t)
+      const dist = Math.abs(t - target)
+      if (s < bestScore - 0.5 || (Math.abs(s - bestScore) <= 0.5 && dist < bestDist)) {
+        bestScore = s
+        best = t
+        bestDist = dist
+      }
+    }
+    return best
+  }
+
   watch(
     [options.fontSize, options.lineHeight, ...(options.watchSources ?? [])],
     () => sync(),
@@ -282,5 +349,5 @@ export function useReaderLineGrid(options: LineGridOptions) {
     if (snapTimer !== null) clearTimeout(snapTimer)
   })
 
-  return { sync, scheduleSnap }
+  return { sync, scheduleSnap, alignPageTarget }
 }

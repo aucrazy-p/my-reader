@@ -7,7 +7,7 @@
 
 ## 目标
 
-纵向滚动时视口上、下边界都不得出现半截行；**窗口可任意拉伸**，设置项（页宽、边距、字号、行高、字体、段距）不受限制；F12 纯净无边框与 `resizable` 行为不变；章节标题不被滚动顶掉。
+纵向滚动时视口上、下边界都不得出现半截行；**窗口可任意拉伸**，设置项（页宽、边距、字号、行高、字体、段距）不受限制；F12 纯净无边框与 `resizable` 行为不变；章节标题不被滚动顶掉；**手动翻页停手后不得出现二次位移（文字上下晃动）**。
 
 ## 约定（实现与维护必须遵守）
 
@@ -24,6 +24,10 @@
 7. **重算时机**：挂载、`resize`、`APP_VIEWPORT_CHANGE_EVENT`、字号/行高/字体/上下左右边距/纯净模式/听书面板高度/章节内容变化。计算时先扣除滚动容器自身的 `padding-bottom`（听书面板会让内容可视区变矮），每次先归零再从「未补偿」布局重测，避免累加。
 8. **左右分页模式不参与**：它自带整页机制，零头必须为 0，吸附函数直接返回。
 9. **吸附手感**：只作用于纵向滚动；单次位移上限 1 行，找不到行矩形不吸附；保留 140ms debounce、320ms `isSnapping` 防抖与原生 smooth，避免和用户滚动抢位置。
+10. **翻页目标预先对齐（零回弹）**：用户主要用空格整页翻页，`scrollPageBy()` 是空格 / 点击翻页区 / 翻页快捷键 / 三分区点击的共用入口。翻页步长 `getPageStep()` 用 `floor(clientHeight / 行高) × 行高`，是均匀行网格假设；段距会让它逐页偏离真实行沿，停手 140ms 后吸附再 `smooth` 拉一次（实测连续 6 页每页回弹 9～11px），即「文字明显上下晃动」。
+    - **必须**在翻页开始前调用 `alignPageTarget(container, container.scrollTop + delta)`：在原始目标 ± 一行内，用内容流坐标的真实行沿生成候选（顶边落在行沿、底边落在行沿反推顶边、1px 细扫兜底），按与吸附**同构**的评分（顶边切量 ×2 + 底边切量）选上下边界都零截断的落点，把补间目标直接设成它。翻页后吸附 `score(0) = 0`、`delta = 0`，自然不动，无需删除或改写吸附。
+    - **吸附本身不删、不改、不动**：滚轮、触控板、触摸、拖滚动条等自由滚动路径仍需它兜底；自动滚动、朗读跟读、进度恢复、分页模式、CI 配置一律不碰。
+    - **禁止**用「翻页后抑制一次吸附」「把 smooth 改瞬时」等补丁掩盖：偏差仍在，只是藏起来，且会波及其他输入路径。
 
 ## 依据
 
@@ -33,11 +37,13 @@
 
 路线 1 首版只按首屏选 `r`：6 个视口首屏全部归零，但 680/860px 中段残留 5.2～6.3px 底切（`r` 全篇共用，中段顶边对齐后底边未必落在行沿上）。把「多个真实行沿作顶边」的代表位置纳入评分后，`scripts/verify-line-grid.mjs` 实测 **6 视口 × 6 滚动位置 topCut / bottomCut 全为 0**，真实滚轮连滚无二次漂移。
 
+**翻页回弹实测**（Playwright 拦截 `Element.prototype.scrollTo` 捕获 `behavior:'smooth'`，800px 视口连续按 6 次空格）：翻页补间本身稳定（0→745 约 250ms，之后 1.4s 零变化），但第 2 页起每页补间结束后约 140ms 吸附都会再拉一次：1490→1498.5(+9)、2244→2254.2(+10)、2999→3009.8(+11)、3755→3765.5(+11)、4511→4521.2(+10)。吸附后上下切行均为 0 —— **「不截断」是用这次回弹换来的**。故把吸附评分前移到翻页决策（第 10 条）。
+
 ## 改动隔离与上游同步
 
 fork 的 12 个自定义提交留在 `main`，不得挪到分支：CI 由 `v*` 标签或手动 `workflow_dispatch` 触发，默认从 `main` checkout，再临时合并上游最新 `main`；`main` 若退回纯上游，默认构建会丢掉无边框功能且 `verify-borderless.mjs` 直接报错。
 
-- **逻辑必须放在独立文件** `frontend/src/composables/useReaderLineGrid.ts`。新文件上游永远不会有，合并零冲突；`ReaderView.vue` 是该仓库改动最频繁的文件（fork 累计 30+ hunk），只保留 import、一次 `useReaderLineGrid()` 调用、`handleScroll` 里的 `scheduleSnap()`、`onMounted` 里一次 `sync()`，以及 CSS 里 `--reader-line-remainder` 的引用。
+- **逻辑必须放在独立文件** `frontend/src/composables/useReaderLineGrid.ts`。新文件上游永远不会有，合并零冲突；`ReaderView.vue` 是该仓库改动最频繁的文件（fork 累计 30+ hunk），只保留 import、一次 `useReaderLineGrid()` 调用、`handleScroll` 里的 `scheduleSnap()`、`onMounted` 里一次 `sync()`、`scrollPageBy()` 里一次 `alignPageTarget()`，以及 CSS 里 `--reader-line-remainder` 的引用。
 - **生命周期自包含**：composable 内部用 `onMounted` / `onUnmounted` / `watch` 自行注册与清理 `resize`、`APP_VIEWPORT_CHANGE_EVENT`、rAF 与定时器，不在 `ReaderView.vue` 的卸载函数里加清理代码。
 - **CI 护栏**：`scripts/verify-borderless.mjs` 检查独立文件与挂载点 marker（已有 CI 步骤，零新增成本）；`scripts/verify-line-grid.mjs` 提供 Playwright 几何断言，合并上游后手动跑一次。上游若自行引入同类吸附机制，两套会打架，composable 必须能一键禁用。
 - **同步策略**：CI 的临时合并保留作「构建时用最新上游」的保险（只在 runner 工作区，不 push 回仓库）；另外定期在本地 `fetch upstream && merge upstream/main`，解一次冲突后 push 到 `origin/main`，让 CI 那步退化为 no-op。
@@ -46,7 +52,7 @@ fork 的 12 个自定义提交留在 `main`，不得挪到分支：CI 由 `v*` �
 
 - `npx vue-tsc -b`、`npm test`、`npm run build`（正式构建前须先清理旧 `frontend/dist`）。
 - `node scripts/verify-borderless.mjs`：自定义功能 marker 全绿。
-- `node scripts/verify-line-grid.mjs`（自包含：自动起 Vite dev server + Edge），注入 `reader-last-session` 模拟网络源章节，用 `Range.getClientRects()` 逐行矩形与容器上/下边界比对：任意滚动位置 `topCut` / `bottomCut` 应 ≈ 0；真实滚轮连滚后无二次漂移。
+- `node scripts/verify-line-grid.mjs`（自包含：自动起 Vite dev server + Edge），注入 `reader-last-session` 模拟网络源章节，用 `Range.getClientRects()` 逐行矩形与容器上/下边界比对：任意滚动位置 `topCut` / `bottomCut` 应 ≈ 0；真实滚轮连滚后无二次漂移；**连续 6 次空格翻页，每次补间终点与 1.4s 后终点的二次位移必须为 0，且翻页路径不得产生任何 `behavior:'smooth'` 调用，翻页后上下切行仍为 0**。
 - **多视口扫描必测**：窗口高度 680 / 740 / 800 / 860 / 920 / 1000px，每个都测首屏 `scrollTop = 0` 与中段随机位置；这是发现旧版残留的关键手段。
 - 回归基线：800px 首屏（原切 21.6px）、`scrollTop = 12`（原切 9.6px）、1000.3 / 1700.6 / 2600.4、接近 `maxScroll`、826px 拉伸后零头重算。
 
@@ -56,4 +62,5 @@ fork 的 12 个自定义提交留在 `main`，不得挪到分支：CI 由 `v*` �
 - 用全局行网格公式（`usable mod 行高`、`baseTop + n × 行高`）决定零头或吸附位置。
 - 把段距强行改成行高整数倍，或改动任何排版设置项来「顺便」修截断。
 - 允许首屏滚动吸附（会顶掉章节标题、改写阅读进度）。
+- 为消除翻页回弹而删掉吸附、改 `smooth` 为瞬时、或给吸附加「本次跳过」标记：其他自由滚动路径会重新出现半截行，且偏差只是被掩盖。
 - 锁死窗口高度、把零头做成黑边、用渐隐遮罩遮住半截行当作「修好」。
