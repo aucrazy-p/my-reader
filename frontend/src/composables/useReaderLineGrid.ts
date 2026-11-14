@@ -265,7 +265,13 @@ export function useReaderLineGrid(options: LineGridOptions) {
     }
     if (!delta) return
     const targetTop = Math.max(0, Math.min(maxScroll, container.scrollTop + delta))
-    if (Math.abs(targetTop - container.scrollTop) < 1) return
+    // 死区 3px：翻页预对齐 alignPageTarget() 用内容流坐标 + cutTop/cutBottom 评分，
+    // 这里用视口坐标 + edgeCut 评分，同一落点在两套评分下有 1px 级分歧。
+    // 真机实测（491px 视口 / 连续 24 次空格 / 跨 3 章）有 3 次算出 1.33px 残差，
+    // 旧阈值 1px 挡不住，停下约 160ms 后 smooth 补一次，文字往下蹭 1.33px ——
+    // 就是「轻微、间歇的往下偏移」。这类残差几乎不可见，而滚轮/触控板的真实
+    // 偏差（实测 6px / 9~11px）远大于 3px，仍照常修正。宁可不修 2px 也不二次位移。
+    if (Math.abs(targetTop - container.scrollTop) < 3) return
     isSnapping = true
     container.scrollTo({ top: targetTop, behavior: 'smooth' })
     setTimeout(() => { isSnapping = false }, 320)
