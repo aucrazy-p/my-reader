@@ -456,6 +456,7 @@ import { onBeforeRouteLeave, useRouter } from 'vue-router'
 import { useReaderStore, fontPresets, TOC_END_CHECK_INTERVAL_MS } from '../stores/reader'
 import { useAppStore } from '../stores/app'
 import { isBorderlessActive, useBorderlessMode } from '../composables/useBorderlessMode'
+import { useReaderLineGrid } from '../composables/useReaderLineGrid'
 import { useBookshelfStore } from '../stores/bookshelf'
 import { getBookInfo, getBookshelfWithCacheInfo } from '../api/bookshelf'
 import { evalSourceClick, openExternalWindow, type ShowBrowserRequest } from '../api/sourceClick'
@@ -1227,8 +1228,6 @@ const loadedReaderImageSizes = new Map<string, string>()
 
 function checkMedia() {
   isMobile.value = window.innerWidth <= 768
-  // 窗口拉伸后行高不变但容器高度变了, 零头必须重算(正文区重新对齐到整数行)。
-  syncLineGridInset()
   // 挂载流程自己会重建(见 onMounted 的 rebuildHorizontalPages), 这里若也排一次
   // 重建就会双重重建 —— 而且后一次的 progress 是拿前一次刚写好的索引算的, 等于
   // 白白多做一轮重量级测量, 还可能把位置恢复的结果覆盖掉。
@@ -3284,159 +3283,13 @@ function clickZoneAction(zone: 'prev' | 'menu' | 'next') {
 
 
 // 整行可视区 + 真实行矩形吸附（约定见 docs/reader-line-grid.md）。
-// 1) 窗口可任意拉伸；把「正文可视区高度 mod 行高」的零头吸收进 .reader-view 的
-//    下留白，正文区恒为整数行 —— 底部边界就不会落在某一行中间。
-// 2) 停手后用 Range.getClientRects() 取真实文字行, 对候选位移植做「上下边界
-//    各切掉多少」评分, 选最完整的一个; 不再假设均匀行网格(段距/标题/图片会破坏它)。
-// 仅纵向滚动生效；左右分页用自身整页机制。
-let scrollSnapTimer: ReturnType<typeof setTimeout> | null = null
-let isSnapping = false
-let lineGridSyncFrame = 0
-
-/** 取当前视口内真正显示着的正文元素；连续阅读/EPUB 多章时不能取第一个。 */
-function activeReaderText(container: HTMLElement): HTMLElement | null {
-  const view = container.getBoundingClientRect()
-  const candidates = container.querySelectorAll<HTMLElement>(
-    '.chapter-text, .continuous-chapter, .epub-chapter-content',
-  )
-  let best: HTMLElement | null = null
-  let bestOverlap = 0
-  for (const el of candidates) {
-    const rect = el.getBoundingClientRect()
-    const overlap = Math.min(rect.bottom, view.bottom) - Math.max(rect.top, view.top)
-    if (overlap > bestOverlap) {
-      bestOverlap = overlap
-      best = el
-    }
-  }
-  return best || candidates[0] || null
-}
-
-function measureReaderLineHeight(container: HTMLElement): number {
-  const text = activeReaderText(container)
-  const lh = text ? parseFloat(getComputedStyle(text).lineHeight) : NaN
-  if (Number.isFinite(lh) && lh > 0) return lh
-  const fallback = config.value.fontSize * config.value.lineHeight
-  return Number.isFinite(fallback) && fallback > 0 ? fallback : 0
-}
-
-/** 把不足一行的零头写进 .reader-view 的下留白。每次先归零再从「未补偿」的
- *  高度重算，避免把上一轮余数累加进去；听书面板的 padding 要先扣掉。 */
-function syncLineGridInset() {
-  if (lineGridSyncFrame) cancelAnimationFrame(lineGridSyncFrame)
-  lineGridSyncFrame = requestAnimationFrame(() => {
-    lineGridSyncFrame = 0
-    const container = scrollContainerRef.value
-    const view = container?.closest('.reader-view') as HTMLElement | null
-    if (!container || !view) return
-    if (isHorizontalPageMode.value) {
-      view.style.setProperty('--reader-line-remainder', '0px')
-      return
-    }
-    const lineHeight = measureReaderLineHeight(container)
-    if (!(lineHeight > 0)) return
-    view.style.setProperty('--reader-line-remainder', '0px')
-    const inset = parseFloat(getComputedStyle(container).paddingBottom) || 0
-    const usable = Math.max(0, container.clientHeight - inset)
-    const lines = Math.max(1, Math.floor((usable + 0.5) / lineHeight))
-    const remainder = Math.max(0, usable - lines * lineHeight)
-    view.style.setProperty('--reader-line-remainder', `${Math.round(remainder * 10) / 10}px`)
-  })
-}
-
-type LineRect = { top: number; bottom: number }
-
-/** 视口附近的真实文字行矩形, 不假设均匀行网格。 */
-function collectLineRects(container: HTMLElement, lineHeight: number): LineRect[] {
-  const text = activeReaderText(container)
-  if (!text) return []
-  const view = container.getBoundingClientRect()
-  const from = view.top - lineHeight * 2
-  const to = view.bottom + lineHeight * 2
-  const blocks = text.querySelectorAll<HTMLElement>('p, li, h1, h2, h3, h4, h5, h6, blockquote')
-  const list: HTMLElement[] = blocks.length ? Array.from(blocks) : [text]
-  const rects: LineRect[] = []
-  for (const block of list) {
-    const rect = block.getBoundingClientRect()
-    if (rect.height <= 0 || rect.bottom < from || rect.top > to) continue
-    const range = document.createRange()
-    range.selectNodeContents(block)
-    for (const line of range.getClientRects()) {
-      if (line.height <= 4 || line.bottom <= from || line.top >= to) continue
-      rects.push({ top: line.top, bottom: line.bottom })
-    }
-  }
-  return rects
-}
-
-/** 滚动 delta 后, 某条视口边界切掉的最大行高(0 = 没有半截行)。 */
-function edgeCut(rects: LineRect[], boundary: number, delta: number, isTop: boolean): number {
-  let worst = 0
-  for (const line of rects) {
-    const top = line.top - delta
-    const bottom = line.bottom - delta
-    if (top >= boundary - 1 || bottom <= boundary + 1) continue
-    const cut = isTop ? boundary - top : bottom - boundary
-    if (cut > worst) worst = cut
-  }
-  return worst
-}
-
-function snapScrollToLine() {
-  const container = scrollContainerRef.value
-  if (!container || isHorizontalPageMode.value) return
-  const lineHeight = measureReaderLineHeight(container)
-  if (!(lineHeight > 0)) return
-  const maxScroll = container.scrollHeight - container.clientHeight
-  if (maxScroll <= 0) return
-  // 首屏顶部本来完整, 别为了对齐把章节标题滚出视口; 其余位置(含首尾边缘)一律吸附。
-  if (container.scrollTop <= 0) return
-  const view = container.getBoundingClientRect()
-  const rects = collectLineRects(container, lineHeight)
-  if (!rects.length) return
-  // 候选位移: 让任意真实行沿落到视口顶边或底边, 且不超过一行。
-  const candidates = new Set<number>()
-  for (const line of rects) {
-    for (const boundary of [view.top, view.bottom]) {
-      for (const edge of [line.top, line.bottom]) {
-        const d = edge - boundary
-        if (Math.abs(d) >= 1 && Math.abs(d) <= lineHeight) candidates.add(Math.round(d * 10) / 10)
-      }
-    }
-  }
-  // 按「滚动后上下边界各切掉多少」评分, 顶边权重更高; 不比原地更好就不动。
-  const score = (d: number) => edgeCut(rects, view.top, d, true) * 2 + edgeCut(rects, view.bottom, d, false)
-  let delta = 0
-  let best = score(0)
-  let bestAbs = 0
-  for (const d of candidates) {
-    const s = score(d)
-    if (s < best - 0.5 || (Math.abs(s - best) <= 0.5 && Math.abs(d) < bestAbs)) {
-      best = s
-      bestAbs = Math.abs(d)
-      delta = d
-    }
-  }
-  if (!delta) return
-  const targetTop = Math.max(0, Math.min(maxScroll, container.scrollTop + delta))
-  if (Math.abs(targetTop - container.scrollTop) < 1) return
-  isSnapping = true
-  container.scrollTo({ top: targetTop, behavior: 'smooth' })
-  setTimeout(() => { isSnapping = false }, 320)
-}
-
-function scheduleScrollSnap() {
-  if (isHorizontalPageMode.value || isSnapping) return
-  if (scrollSnapTimer !== null) clearTimeout(scrollSnapTimer)
-  scrollSnapTimer = setTimeout(snapScrollToLine, 140)
-}
-
-// 排版参数、章节内容、听书面板、纯净模式、分页模式变化都要重算零头;
-// flush: 'post' 保证 DOM 已按新配置更新后再量高度。
-watch(
-  [
-    () => config.value.fontSize,
-    () => config.value.lineHeight,
+// 逻辑全部在独立 composable 中，本文件只留挂载点，降低上游合并冲突面。
+const lineGrid = useReaderLineGrid({
+  getContainer: () => scrollContainerRef.value,
+  isHorizontal: () => isHorizontalPageMode.value,
+  fontSize: () => config.value.fontSize,
+  lineHeight: () => config.value.lineHeight,
+  watchSources: [
     () => config.value.fontFamily,
     () => config.value.pageVerticalPadding,
     () => config.value.pageSidePadding,
@@ -3445,13 +3298,11 @@ watch(
     () => borderlessMode.value,
     () => isHorizontalPageMode.value,
   ],
-  () => syncLineGridInset(),
-  { flush: 'post' },
-)
+})
 
 function handleScroll() {
   hideSelectionMenu()
-  scheduleScrollSnap()
+  lineGrid.scheduleSnap()
   const container = scrollContainerRef.value
   if (container && isContinuousMode.value && continuousChapters.value.length) {
     if (Date.now() < suppressContinuousScrollSyncUntil) {
@@ -4236,7 +4087,7 @@ onMounted(async () => {
   void renderPdfPagesIfNeeded()
   loadSavedReadingPosition()
   // 正文 v-html 落在 DOM 之后才能量到行高, 这里补一次整行可视区对齐。
-  void nextTick(syncLineGridInset)
+  void nextTick(() => lineGrid.sync())
   window.addEventListener('keydown', handleKeydown)
   window.addEventListener('wheel', handleReaderWheel, { passive: false })
   // 鼠标键(中键/侧键)可绑快捷键。捕获阶段: 要抢在 WebView2 的中键自动滚动与
@@ -4332,7 +4183,6 @@ onUnmounted(() => {
   if (persistPositionTimer) clearTimeout(persistPositionTimer)
   if (legadoPositionRestoreTimer) clearTimeout(legadoPositionRestoreTimer)
   if (refreshOfflineCacheStateTimer) clearTimeout(refreshOfflineCacheStateTimer)
-  if (lineGridSyncFrame) cancelAnimationFrame(lineGridSyncFrame)
   if (horizontalRebuildTimer) clearTimeout(horizontalRebuildTimer)
   if (horizontalPageTurnTimer !== null) {
     clearTimeout(horizontalPageTurnTimer)
@@ -4628,8 +4478,8 @@ watch(
  * 设置项给的间距; 而挂在内容流上时, 上下留白只在章节头尾出现一次、随滚动消失。
  * 左右分页模式不加这个 class: 那边一页 = 一屏, .horizontal-page 的 padding
  * 天然就是页面级留白, 再叠一层会变成双倍。
- * 下留白再叠加 --reader-line-remainder(由 syncLineGridInset 写入): 把不足一行的
- * 零头吸收到这里, 正文可视区恒为整数行, 底边就不会切在半行上。窗口仍可任意拉伸。 */
+ * 下留白再叠加 --reader-line-remainder(由 useReaderLineGrid 按首屏真实行沿动态选出): 把不足一行的
+ * 零头吸收到这里, 首屏底边落在真实行沿上。窗口仍可任意拉伸。 */
 .reader-view.viewport-inset-mode {
   padding: calc(var(--safe-area-top) + var(--reader-page-vertical-padding, 24px))
            var(--reader-side-padding, 24px)
@@ -4759,11 +4609,10 @@ watch(
   overscroll-behavior: none;
 }
 
-/* 纵向滚动的半截行由两处共同解决, 不用 CSS scroll-snap(mandatory 会把长段落
- * 硬拉回段首, proximity 在长段中部停下仍是半截):
- *   1) .reader-view.viewport-inset-mode 的下留白吸收零头, 正文区恒为整数行(管底部);
- *   2) JS 停手后按真实行矩形吸附到最近行首(管顶部/任意停止位置)。
- * 见 docs/reader-line-grid.md。左右分页用自己的整页机制, 两者都不参与。 */
+/* 纵向滚动的半截行由 useReaderLineGrid 解决(见 docs/reader-line-grid.md):
+ *   1) 按首屏真实行矩形动态选零头, 吸收进下留白(管首屏底边);
+ *   2) 停手后按真实行矩形几何评分吸附(管顶部/任意停止位置)。
+ * 不用 CSS scroll-snap(mandatory 会把长段落硬拉回段首)。左右分页不参与。 */
 
 /* 听书面板浮在正文之上、不参与滚动。分页模式下正文高度恒等于一屏,
    被面板压住的那几行永远翻不出来, 所以面板在时给容器让出底部空间:

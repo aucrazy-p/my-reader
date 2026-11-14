@@ -74,6 +74,38 @@ const checks = [
     file: 'frontend/src/views/ReaderView.vue',
     markers: ['viewport-inset-mode', '.reader-view.viewport-inset-mode .chapter-content'],
   },
+  {
+    name: '整行排版独立模块',
+    file: 'frontend/src/composables/useReaderLineGrid.ts',
+    markers: [
+      'export function useReaderLineGrid',
+      'chooseRemainder',
+      'collectFlowRects',
+      'scheduleSnap',
+      'APP_VIEWPORT_CHANGE_EVENT',
+    ],
+  },
+  {
+    name: '整行排版挂载点',
+    file: 'frontend/src/views/ReaderView.vue',
+    markers: [
+      "import { useReaderLineGrid } from '../composables/useReaderLineGrid'",
+      'const lineGrid = useReaderLineGrid({',
+      'lineGrid.scheduleSnap()',
+      'lineGrid.sync()',
+      '--reader-line-remainder',
+    ],
+  },
+  {
+    name: '排版约定文档',
+    file: 'docs/reader-line-grid.md',
+    markers: ['路线 1', '改动隔离与上游同步', '禁止'],
+  },
+  {
+    name: '几何断言脚本',
+    file: 'scripts/verify-line-grid.mjs',
+    markers: ['chromium', 'topCut', 'bottomCut', 'VIEWPORTS'],
+  },
 ]
 
 const failures = []

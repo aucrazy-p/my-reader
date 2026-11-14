@@ -1,0 +1,174 @@
+#!/usr/bin/env node
+
+/**
+ * 阅读页整行排版几何断言（约定见 docs/reader-line-grid.md）。
+ * 自包含：自己拉起 Vite dev server、跑完自动关闭，不需要手工开服务。
+ *
+ *   node scripts/verify-line-grid.mjs
+ *
+ * 合并上游 main 之后手动跑一次：上游若改动了阅读页，这里会直接暴露
+ * 半截行回归或挂载点被冲掉（此时 --reader-line-remainder 恒为 0px）。
+ */
+import { spawn } from 'node:child_process'
+import { resolve } from 'node:path'
+import { chromium } from '@playwright/test'
+
+const root = resolve(import.meta.dirname, '..')
+const frontend = resolve(root, 'frontend')
+const PORT = Number(process.env.LINE_GRID_PORT || 5178)
+const BASE = `http://127.0.0.1:${PORT}`
+const VIEWPORTS = [680, 740, 800, 860, 920, 1000]
+const SCROLL_POINTS = [0, 12, 48.6, 1000.3, 1700.6, 2600.4]
+const TOLERANCE = 1.0
+
+const para = (n) => '　　这是一段用于复现阅读截断问题的网络小说正文，第' + n + '段。'.repeat(4)
+const content = Array.from({ length: 90 }, (_, i) => para(i + 1)).join('\n')
+const session = {
+  book: {
+    bookUrl: 'https://example.test/book/1', name: '截断测试书', author: '测试',
+    origin: 'https://example.test/src.json', type: 0, coverUrl: '', intro: '',
+    durChapterIndex: 0, durChapterTime: 0, group: 0, order: 0,
+    originName: '测试书源', chapterUrl: 'https://example.test/book/1/ch1',
+  },
+  chapters: [{
+    url: 'https://example.test/book/1/ch1', title: '第一章 测试', index: 0,
+    isVolume: false, bookUrl: 'https://example.test/book/1',
+  }],
+  currentIndex: 0, chapterScrollProgress: 0, updatedAt: 0,
+}
+
+let server = null
+let browser = null
+
+async function startServer() {
+  server = spawn(
+    process.execPath,
+    [resolve(frontend, 'node_modules/vite/bin/vite.js'), '--host', '127.0.0.1', '--port', String(PORT), '--strictPort'],
+    { cwd: frontend, stdio: ['ignore', 'pipe', 'pipe'] },
+  )
+  let log = ''
+  server.stdout.on('data', (d) => { log += d.toString() })
+  server.stderr.on('data', (d) => { log += d.toString() })
+  const deadline = Date.now() + 30000
+  for (;;) {
+    try {
+      const res = await fetch(BASE)
+      if (res.ok) return
+    } catch { /* 还没起来 */ }
+    if (Date.now() > deadline) throw new Error('dev server 启动超时\n' + log)
+    await new Promise((r) => setTimeout(r, 300))
+  }
+}
+
+async function launchBrowser() {
+  try {
+    return await chromium.launch({ channel: 'msedge', headless: true })
+  } catch {
+    return await chromium.launch({ headless: true })
+  }
+}
+
+const measure = (page) => page.evaluate(() => {
+  const c = document.querySelector('.reader-scroll-container')
+  const t = document.querySelector('.chapter-text')
+  const v = document.querySelector('.reader-view')
+  if (!c || !t || !v) return null
+  const cr = c.getBoundingClientRect()
+  const lines = []
+  for (const p of t.querySelectorAll('p')) {
+    const range = document.createRange()
+    range.selectNodeContents(p)
+    for (const x of range.getClientRects()) if (x.height > 4) lines.push(x)
+  }
+  const cut = (edge, isTop) => {
+    let worst = 0
+    for (const l of lines) {
+      if (l.top >= edge - 1 || l.bottom <= edge + 1) continue
+      const amount = isTop ? edge - l.top : l.bottom - edge
+      if (amount > worst) worst = amount
+    }
+    return +worst.toFixed(1)
+  }
+  return {
+    topCut: cut(cr.top, true),
+    bottomCut: cut(cr.bottom, false),
+    remainder: getComputedStyle(v).getPropertyValue('--reader-line-remainder').trim(),
+    clientHeight: c.clientHeight,
+    scrollTop: +c.scrollTop.toFixed(1),
+  }
+})
+
+const failures = []
+try {
+  await startServer()
+  browser = await launchBrowser()
+  const page = await browser.newPage({ viewport: { width: 1180, height: 800 } })
+  page.on('pageerror', (e) => failures.push(`页面异常: ${e.message}`))
+  await page.addInitScript((s) => localStorage.setItem('reader-last-session', JSON.stringify(s)), session)
+  await page.route('**/reader3/**', async (route) => {
+    const p = (route.request().url().split('/reader3/')[1] || '').split('?')[0]
+    let data = {}
+    if (/Shelf|Groups|List|list|Catalog|Sources|Rules|Bookmarks/i.test(p)) data = []
+    if (p === 'getBookContent') data = content
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ isSuccess: true, data, errorMsg: null }) })
+  })
+  await page.goto(`${BASE}/#/reader`, { waitUntil: 'domcontentloaded' })
+  await page.waitForSelector('.chapter-text p', { timeout: 15000 })
+  await page.waitForTimeout(1300)
+
+  console.log('视口  | 最差顶切 | 最差底切 | 零头     | 结果')
+  for (const height of VIEWPORTS) {
+    await page.setViewportSize({ width: 1180, height })
+    await page.waitForTimeout(600)
+    let worstTop = 0
+    let worstBottom = 0
+    let remainder = ''
+    const details = []
+    for (const point of SCROLL_POINTS) {
+      await page.evaluate((v) => { document.querySelector('.reader-scroll-container').scrollTop = v }, point)
+      await page.waitForTimeout(750)
+      const m = await measure(page)
+      if (!m) { failures.push(`${height}px / ${point}: 阅读容器未渲染`); continue }
+      worstTop = Math.max(worstTop, m.topCut)
+      worstBottom = Math.max(worstBottom, m.bottomCut)
+      remainder = m.remainder
+      if (m.topCut > TOLERANCE || m.bottomCut > TOLERANCE) {
+        details.push(`    ${point} → top ${m.topCut} / bottom ${m.bottomCut} (scrollTop ${m.scrollTop}, 容器 ${m.clientHeight})`)
+        failures.push(`${height}px / scrollTop=${point}: top ${m.topCut}px, bottom ${m.bottomCut}px`)
+      }
+    }
+    const ok = worstTop <= TOLERANCE && worstBottom <= TOLERANCE
+    console.log(`${String(height).padEnd(5)} | ${String(worstTop).padEnd(8)} | ${String(worstBottom).padEnd(8)} | ${remainder.padEnd(8)} | ${ok ? 'ok' : 'FAIL'}`)
+    for (const line of details) console.log(line)
+  }
+
+  // 真实滚轮手势后位置必须稳定（吸附不能与用户滚动互相拉扯）。
+  await page.setViewportSize({ width: 1180, height: 800 })
+  await page.waitForTimeout(500)
+  await page.mouse.move(590, 400)
+  for (let i = 0; i < 4; i++) { await page.mouse.wheel(0, 90); await page.waitForTimeout(90) }
+  await page.waitForTimeout(800)
+  const a = await measure(page)
+  await page.waitForTimeout(1200)
+  const b = await measure(page)
+  if (a && b && Math.abs(b.scrollTop - a.scrollTop) > 1) {
+    failures.push(`滚轮后二次漂移 ${+(b.scrollTop - a.scrollTop).toFixed(1)}px`)
+  }
+  console.log(`滚轮稳定性: ${a && b ? (Math.abs(b.scrollTop - a.scrollTop).toFixed(1) + 'px 漂移') : '未取到数据'}`)
+
+  if (!a?.remainder || parseFloat(a.remainder) < 0) {
+    failures.push('未检测到 --reader-line-remainder，挂载点可能被上游冲掉')
+  }
+} catch (err) {
+  failures.push(`执行异常: ${err.message}`)
+} finally {
+  if (browser) await browser.close().catch(() => {})
+  if (server) server.kill('SIGTERM')
+}
+
+if (failures.length) {
+  console.error(`\n整行排版校验失败（阈值 ${TOLERANCE}px）:\n  - ${failures.join('\n  - ')}`)
+  process.exitCode = 1
+} else {
+  console.log(`\nLine grid verified: ${VIEWPORTS.length} 个视口 × ${SCROLL_POINTS.length} 个滚动位置，上下边界零截断`)
+}
