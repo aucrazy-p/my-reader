@@ -10,6 +10,7 @@
  * 半截行回归或挂载点被冲掉（此时 --reader-line-remainder 恒为 0px）。
  */
 import { spawn } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { chromium } from '@playwright/test'
 
@@ -17,12 +18,18 @@ const root = resolve(import.meta.dirname, '..')
 const frontend = resolve(root, 'frontend')
 const PORT = Number(process.env.LINE_GRID_PORT || 5178)
 const BASE = `http://127.0.0.1:${PORT}`
-const VIEWPORTS = [680, 740, 800, 860, 920, 1000]
+// 410 是真机实测的阅读区高度；此前只用 680~1000 的假想尺寸。
+const VIEWPORTS = [410, 680, 740, 800, 860, 920, 1000]
 const SCROLL_POINTS = [0, 12, 48.6, 1000.3, 1700.6, 2600.4]
 const TOLERANCE = 1.0
 
-const para = (n) => '　　这是一段用于复现阅读截断问题的网络小说正文，第' + n + '段。'.repeat(4)
-const content = Array.from({ length: 160 }, (_, i) => para(i + 1)).join('\n')
+// 验证样本必须是真实网络源章节：整块文本 + <br>、0 个 p 标签。
+// 早期用 160 段 <p> 自造正文，掩盖了 collectFlowRects 拿不到行矩形的问题。
+const FIXTURE = resolve(root, '.workbuddy/fixtures/real-chapter.html')
+const content = readFileSync(FIXTURE, 'utf8')
+if (content.length < 500 || /<p[\s>]/i.test(content)) {
+  throw new Error('验证样本不是真实网络源结构（过短或含 p 标签），拒绝执行以免假绿')
+}
 const session = {
   book: {
     bookUrl: 'https://example.test/book/1', name: '截断测试书', author: '测试',
@@ -75,10 +82,17 @@ const measure = (page) => page.evaluate(() => {
   if (!c || !t || !v) return null
   const cr = c.getBoundingClientRect()
   const lines = []
-  for (const p of t.querySelectorAll('p')) {
+  // 与 useReaderLineGrid.textLineRects 同口径：逐文本节点取行矩形。
+  // 直接 selectNodeContents(整章) 会把 div.con 的整块大矩形混进来，切行值失真。
+  const blocks = t.querySelectorAll('p, li, h1, h2, h3, h4, h5, h6, blockquote')
+  for (const root of blocks.length ? Array.from(blocks) : [t]) {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
     const range = document.createRange()
-    range.selectNodeContents(p)
-    for (const x of range.getClientRects()) if (x.height > 4) lines.push(x)
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      if (!node.textContent || !node.textContent.trim()) continue
+      range.selectNodeContents(node)
+      for (const x of range.getClientRects()) if (x.height > 4) lines.push(x)
+    }
   }
   const cut = (edge, isTop) => {
     let worst = 0
@@ -124,7 +138,12 @@ try {
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ isSuccess: true, data, errorMsg: null }) })
   })
   await page.goto(`${BASE}/#/reader`, { waitUntil: 'domcontentloaded' })
-  await page.waitForSelector('.chapter-text p', { timeout: 15000 })
+  await page.waitForSelector('.chapter-text', { timeout: 15000 })
+  await page.waitForFunction(
+    () => (document.querySelector('.chapter-text')?.innerText || '').length > 200,
+    null,
+    { timeout: 15000 },
+  )
   await page.waitForTimeout(1300)
 
   console.log('视口  | 最差顶切 | 最差底切 | 零头     | 结果')
@@ -205,6 +224,42 @@ try {
     failures.push(`翻页路径产生了 ${smoothCalls.length} 次 smooth 吸附: ${smoothCalls.join(', ')}`)
   }
   console.log(`翻页零回弹: 最差 ${worstBounce.toFixed(1)}px, smooth 吸附调用 ${smoothCalls.length} 次`)
+
+  // 章末：真机阅读区高度就是 410px，切回去再测，避免只在 800px 下通过。
+  // 从章首按空格到「物理到底」的次数不能超过理论页数 +1。
+  await page.setViewportSize({ width: 1180, height: 410 })
+  await page.waitForTimeout(600)
+  // 吸附每页把 scrollTop 拉回会让 pageForward 的到底判定迟迟不成立，
+  // 表现就是「本章最后要按好几次空格才翻页换章」。
+  await page.evaluate(() => { document.querySelector('.reader-scroll-container').scrollTop = 0 })
+  await page.waitForTimeout(600)
+  const geom = await page.evaluate(() => {
+    const c = document.querySelector('.reader-scroll-container')
+    return { h: c.clientHeight, sh: c.scrollHeight }
+  })
+  const maxScroll = Math.max(0, geom.sh - geom.h)
+  const startTop = await page.evaluate(() => document.querySelector('.reader-scroll-container').scrollTop)
+  const maxLoop = Math.ceil(maxScroll / (geom.h * 0.75)) + 12
+  let presses = 0
+  let reachedBottom = false
+  let firstStep = 0
+  for (let i = 0; i < maxLoop; i++) {
+    await page.keyboard.press('Space')
+    presses++
+    await page.waitForTimeout(500)
+    const st = await page.evaluate(() => {
+      const c = document.querySelector('.reader-scroll-container')
+      return { top: c.scrollTop, bottom: c.scrollTop + c.clientHeight >= c.scrollHeight - 10 }
+    })
+    if (presses === 1) firstStep = st.top - startTop
+    reachedBottom = st.bottom
+    if (reachedBottom) break
+  }
+  const theoreticalPages = firstStep > 0 ? Math.ceil(maxScroll / firstStep) : -1
+  console.log(`章末到底: 实测步长 ${firstStep.toFixed(1)}px / 理论 ${theoreticalPages} 页 / 按 ${presses} 次空格到底=${reachedBottom}`)
+  if (!reachedBottom || theoreticalPages < 0 || presses > theoreticalPages + 1) {
+    failures.push(`章末被拖住: 理论 ${theoreticalPages} 页, 实测按 ${presses} 次${reachedBottom ? '才到底' : '仍未到底'}`)
+  }
 
   if (!a?.remainder || parseFloat(a.remainder) < 0) {
     failures.push('未检测到 --reader-line-remainder，挂载点可能被上游冲掉')

@@ -50,6 +50,26 @@ function measureReaderLineHeight(container: HTMLElement, options: LineGridOption
 }
 
 /**
+ * 逐文本节点取行矩形。
+ *
+ * 直接对整章元素 `range.selectNodeContents()` 会把内部的 `div.con` 等块级元素
+ * 的**整体矩形**也一并返回（真机实测高度上千像素），混进切行评分后会把
+ * topCut/bottomCut 算成 1583px、2106px 这种荒谬值，预对齐随之选错落点。
+ * 只有文本节点的 `getClientRects()` 才是逐行矩形。
+ */
+function textLineRects(root: HTMLElement): DOMRect[] {
+  const rects: DOMRect[] = []
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+  const range = document.createRange()
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    if (!node.textContent?.trim()) continue
+    range.selectNodeContents(node)
+    for (const r of range.getClientRects()) if (r.height > 4) rects.push(r)
+  }
+  return rects
+}
+
+/**
  * 内容流坐标下的真实文字行矩形。
  * 坐标 = 视口坐标 - 容器顶边 + scrollTop，因此不随当前滚动位置改变；
  * 而首屏底边恒为内容流坐标 `usable`，与用户当前滚到哪一屏无关。
@@ -57,17 +77,16 @@ function measureReaderLineHeight(container: HTMLElement, options: LineGridOption
 function collectFlowRects(container: HTMLElement, from: number, to: number): LineRect[] {
   const view = container.getBoundingClientRect()
   const scrollTop = container.scrollTop
+  // 与 collectLineRects 保持同一套数据源。网络源章节常是「整块文本 + <br>」
+  // （真机实测：.chapter-text 下只有 div.con，一个 p 都没有），此时必须回退到
+  // 整章元素；否则这里拿到空数组，alignPageTarget 直接放弃预对齐，而吸附自带
+  // 整章兜底照常工作 —— 翻页后每页被 smooth 再拉一次。
+  const blocks = container.querySelectorAll<HTMLElement>(BLOCK_SELECTOR)
+  const text = blocks.length ? null : activeReaderText(container)
+  const roots: HTMLElement[] = blocks.length ? Array.from(blocks) : (text ? [text] : [])
   const rects: LineRect[] = []
-  for (const block of container.querySelectorAll<HTMLElement>(BLOCK_SELECTOR)) {
-    const box = block.getBoundingClientRect()
-    if (box.height <= 0) continue
-    const flowTop = box.top - view.top + scrollTop
-    const flowBottom = box.bottom - view.top + scrollTop
-    if (flowBottom < from || flowTop > to) continue
-    const range = document.createRange()
-    range.selectNodeContents(block)
-    for (const line of range.getClientRects()) {
-      if (line.height <= 4) continue
+  for (const root of roots) {
+    for (const line of textLineRects(root)) {
       const top = line.top - view.top + scrollTop
       const bottom = line.bottom - view.top + scrollTop
       if (bottom > from && top < to) rects.push({ top, bottom })
@@ -186,15 +205,11 @@ export function useReaderLineGrid(options: LineGridOptions) {
     const from = view.top - lineHeight * 2
     const to = view.bottom + lineHeight * 2
     const blocks = text.querySelectorAll<HTMLElement>(BLOCK_SELECTOR)
-    const list: HTMLElement[] = blocks.length ? Array.from(blocks) : [text]
+    const roots: HTMLElement[] = blocks.length ? Array.from(blocks) : [text]
     const rects: LineRect[] = []
-    for (const block of list) {
-      const box = block.getBoundingClientRect()
-      if (box.height <= 0 || box.bottom < from || box.top > to) continue
-      const range = document.createRange()
-      range.selectNodeContents(block)
-      for (const line of range.getClientRects()) {
-        if (line.height <= 4 || line.bottom <= from || line.top >= to) continue
+    for (const root of roots) {
+      for (const line of textLineRects(root)) {
+        if (line.bottom <= from || line.top >= to) continue
         rects.push({ top: line.top, bottom: line.bottom })
       }
     }

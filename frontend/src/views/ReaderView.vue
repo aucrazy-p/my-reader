@@ -4838,6 +4838,13 @@ watch(
   line-height: 1.4;
 }
 
+/* 网络源章节正文首行通常自带章名（例「第7章 休！」），顶部这个居中加粗大字
+   会把同一个标题重复显示两遍。普通章节模式隐藏它；连续阅读的分卷标题
+   （.continuous-chapter）保留，否则进入新一卷时没有分隔提示。 */
+.chapter-content:not(.continuous-chapter) .chapter-title {
+  display: none;
+}
+
 /* 卷标题章（`第一卷` 之类）在连续阅读里的分隔块。
    章名照常由 `.chapter-title` 渲染（与普通章节一致），这里只把上下间隔拉开，
    让"进入新一卷"在长滚动里看得出来；卷章不画正文区，见模板。 */
