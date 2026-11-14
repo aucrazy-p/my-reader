@@ -5078,6 +5078,14 @@ watch(
   padding-bottom: 40px;
 }
 
+/* 自定义：章末「下一章 / 没有更多了」圆角按钮连同它占的空白一起隐藏。
+   换章不依赖这个按钮 —— 快捷键、右键菜单、章末按空格自动换章都走
+   nextChapter()，因此只隐藏展示层，翻页/换章逻辑一律不动。
+   footer 在 .chapter-text 之外，不参与行矩形采集，也不影响零头 remainder 的输入。 */
+.chapter-footer {
+  display: none;
+}
+
 .continuous-loading-inline {
   text-align: center;
   padding: 18px 24px;
